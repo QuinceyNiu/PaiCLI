@@ -1,0 +1,37 @@
+# Environment and local secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environments
+.venv/
+venv/
+env/
+
+# Python caches and test output
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build and package artifacts
+build/
+dist/
+*.egg-info/
+
+# Local indexes, logs, and temporary files
+*.log
+*.sqlite
+*.db
+.cache/
+
+# IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+
+# Legacy/generated project artifacts
+target/
+.mvn/
