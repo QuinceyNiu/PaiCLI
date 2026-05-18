@@ -480,13 +480,15 @@ class MemoryManager:
         lines = ["[相关记忆]"]
         used_tokens = 0
         for entry in memories:
+            if self._contains_missing_absolute_path(entry.content):
+                continue
             line = f"- {entry.type.value}: {entry.content}"
             line_tokens = estimate_tokens(line)
             if used_tokens + line_tokens > max_tokens and len(lines) > 1:
                 break
             lines.append(line)
             used_tokens += line_tokens
-        return "\n".join(lines)
+        return "\n".join(lines) if len(lines) > 1 else ""
 
     def get_system_status(self) -> str:
         return "\n".join(
@@ -504,6 +506,13 @@ class MemoryManager:
 
     def _enforce_budget(self) -> None:
         self.compress_if_needed()
+
+    def _contains_missing_absolute_path(self, text: str) -> bool:
+        for path_text in re.findall(r"(?:/[\w .@%+=:,~^{}\\-]+)+", text):
+            path_text = path_text.rstrip("，。；:：、)")
+            if path_text and not Path(path_text).exists():
+                return True
+        return False
 
 
 class MemoryQueryTokenizer:

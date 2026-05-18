@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import queue
+import re
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Protocol
@@ -14,6 +18,10 @@ from paicli.rag import CodeRetriever, SearchResultFormatter, VectorStore
 
 ToolExecutor = Callable[[Mapping[str, str]], str]
 CodeRetrieverFactory = Callable[[], CodeRetriever]
+MAX_PARALLEL_TOOLS = 4
+DEFAULT_TOOL_BATCH_TIMEOUT_SECONDS = 90.0
+DEFAULT_COMMAND_TIMEOUT_SECONDS = 60.0
+MAX_COMMAND_OUTPUT_CHARS = 8_000
 
 
 @dataclass(frozen=True)
@@ -29,6 +37,58 @@ class RegisteredTool:
             description=self.description,
             parameters=self.parameters,
         )
+
+
+@dataclass(frozen=True)
+class ToolInvocation:
+    id: str
+    name: str
+    arguments_json: str
+
+
+@dataclass(frozen=True)
+class ToolExecutionResult:
+    id: str
+    name: str
+    arguments_json: str
+    result: str
+    elapsed_millis: int
+    timed_out: bool = False
+
+    @classmethod
+    def completed(
+        cls,
+        invocation: ToolInvocation,
+        result: str,
+        elapsed_millis: int,
+    ) -> "ToolExecutionResult":
+        return cls(
+            invocation.id,
+            invocation.name,
+            invocation.arguments_json,
+            result,
+            elapsed_millis,
+            False,
+        )
+
+    @classmethod
+    def timed_out_result(
+        cls,
+        invocation: ToolInvocation,
+        timeout_seconds: float,
+    ) -> "ToolExecutionResult":
+        return cls(
+            invocation.id,
+            invocation.name,
+            invocation.arguments_json,
+            f"工具执行超时（{timeout_seconds:g}秒），已取消",
+            int(timeout_seconds * 1000),
+            True,
+        )
+
+    @classmethod
+    def failed(cls, invocation: ToolInvocation, message: str) -> "ToolExecutionResult":
+        return cls.completed(invocation, f"工具执行失败: {message}", 0)
 
 
 class ToolProvider(Protocol):
@@ -61,10 +121,14 @@ class ToolRegistry:
         base_dir: str | Path | None = None,
         providers: Iterable[ToolProvider] | None = None,
         code_retriever_factory: CodeRetrieverFactory | None = None,
+        tool_batch_timeout_seconds: float = DEFAULT_TOOL_BATCH_TIMEOUT_SECONDS,
+        command_timeout_seconds: float = DEFAULT_COMMAND_TIMEOUT_SECONDS,
     ) -> None:
         self.base_dir = Path(base_dir or ".").resolve()
         self.project_path = str(self.base_dir)
         self.code_retriever_factory = code_retriever_factory
+        self.tool_batch_timeout_seconds = tool_batch_timeout_seconds
+        self.command_timeout_seconds = command_timeout_seconds
         self.tools: dict[str, RegisteredTool] = {}
         self._register_file_tools()
         self._register_shell_tools()
@@ -95,6 +159,79 @@ class ToolRegistry:
             return tool.executor(args)
         except Exception as exc:  # Defensive boundary for LLM-facing tool output.
             return f"工具执行失败: {exc}"
+
+    def execute_tool(self, name: str, arguments_json: str) -> str:
+        try:
+            parsed_args = json.loads(arguments_json or "{}")
+            if not isinstance(parsed_args, dict):
+                return "工具参数解析失败: arguments 必须是 JSON 对象"
+            args = {
+                str(key): value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
+                for key, value in parsed_args.items()
+            }
+        except Exception as exc:
+            return f"工具参数解析失败: {exc}"
+
+        return self.execute(name, args)
+
+    def execute_tools(self, invocations: list[ToolInvocation]) -> list[ToolExecutionResult]:
+        if not invocations:
+            return []
+
+        if len(invocations) == 1:
+            invocation = invocations[0]
+            started_at = time.perf_counter()
+            result = self.execute_tool(invocation.name, invocation.arguments_json)
+            return [
+                ToolExecutionResult.completed(
+                    invocation,
+                    result,
+                    self._elapsed_millis(started_at),
+                )
+            ]
+
+        results: list[ToolExecutionResult | None] = [None] * len(invocations)
+        work_queue: queue.Queue[tuple[int, ToolInvocation]] = queue.Queue()
+        for index, invocation in enumerate(invocations):
+            work_queue.put((index, invocation))
+
+        def worker() -> None:
+            while True:
+                try:
+                    index, invocation = work_queue.get_nowait()
+                except queue.Empty:
+                    return
+                started_at = time.perf_counter()
+                try:
+                    result = self.execute_tool(invocation.name, invocation.arguments_json)
+                    results[index] = ToolExecutionResult.completed(
+                        invocation,
+                        result,
+                        self._elapsed_millis(started_at),
+                    )
+                except Exception as exc:
+                    results[index] = ToolExecutionResult.failed(invocation, str(exc))
+                finally:
+                    work_queue.task_done()
+
+        threads = [
+            threading.Thread(target=worker, name="paicli-tool-executor", daemon=True)
+            for _ in range(min(len(invocations), MAX_PARALLEL_TOOLS))
+        ]
+        for thread in threads:
+            thread.start()
+
+        deadline = time.monotonic() + self.tool_batch_timeout_seconds
+        for thread in threads:
+            remaining = max(0.0, deadline - time.monotonic())
+            thread.join(remaining)
+
+        return [
+            result
+            if result is not None
+            else ToolExecutionResult.timed_out_result(invocation, self.tool_batch_timeout_seconds)
+            for result, invocation in zip(results, invocations)
+        ]
 
     def _register_file_tools(self) -> None:
         self.register(
@@ -164,7 +301,7 @@ class ToolRegistry:
         try:
             return "文件内容:\n" + path.read_text(encoding="utf-8")
         except Exception as exc:
-            return f"读取文件失败: {exc}"
+            return self._format_path_error("读取文件失败", path, exc)
 
     def _write_file(self, args: Mapping[str, str]) -> str:
         path = self._resolve(args.get("path", ""))
@@ -183,12 +320,17 @@ class ToolRegistry:
             lines = [f"[DIR] {entry.name}" if entry.is_dir() else f"[FILE] {entry.name}" for entry in entries]
             return "目录内容:\n" + "\n".join(lines)
         except Exception as exc:
-            return f"列出目录失败: {exc}"
+            return self._format_path_error("列出目录失败", path, exc)
 
     def _execute_command(self, args: Mapping[str, str]) -> str:
         command = args.get("command", "")
         if not command.strip():
             return "执行命令失败: command 不能为空"
+        if self._is_disallowed_broad_scan(command):
+            return (
+                "禁止执行全盘扫描命令。请改用 read_file、list_dir、search_code，"
+                "或将 find 限制在当前项目的具体子目录内。"
+            )
 
         try:
             completed = subprocess.run(
@@ -197,10 +339,13 @@ class ToolRegistry:
                 text=True,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                timeout=120,
+                timeout=self.command_timeout_seconds,
                 check=False,
             )
-            return f"命令执行完成 (exit code: {completed.returncode})\n{completed.stdout}"
+            output = self._truncate_command_output(completed.stdout or "")
+            return f"命令执行完成 (exit code: {completed.returncode})\n{output}"
+        except subprocess.TimeoutExpired:
+            return f"命令执行超时（{self.command_timeout_seconds:g}秒），已强制终止"
         except Exception as exc:
             return f"执行命令失败: {exc}"
 
@@ -252,3 +397,29 @@ class ToolRegistry:
         if target.is_absolute():
             return target
         return (self.base_dir / target).resolve()
+
+    def _truncate_command_output(self, output: str) -> str:
+        if len(output) <= MAX_COMMAND_OUTPUT_CHARS:
+            return output
+        return output[:MAX_COMMAND_OUTPUT_CHARS] + "\n...(输出已截断)"
+
+    def _is_disallowed_broad_scan(self, command: str) -> bool:
+        normalized = re.sub(r"\s+", " ", command).strip().lower()
+        return (
+            "find /" in normalized
+            or "find ~" in normalized
+            or "find $home" in normalized
+        )
+
+    def _elapsed_millis(self, started_at: float) -> int:
+        return int((time.perf_counter() - started_at) * 1000)
+
+    def _format_path_error(self, prefix: str, path: Path, exc: Exception) -> str:
+        message = f"{prefix}: {exc}"
+        if path.is_absolute() and not path.exists():
+            message += (
+                f"\n当前项目根目录: {self.base_dir}"
+                "\n如果你是在读取当前项目文件，请优先使用相对路径，"
+                "例如 README.md、pyproject.toml 或 .gitignore。"
+            )
+        return message

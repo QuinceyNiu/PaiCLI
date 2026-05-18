@@ -6,6 +6,7 @@ from pathlib import Path
 from paicli.agent.agent import Agent
 from paicli.llm.glm_client import ChatResponse, FunctionCall, Message, ToolCall, Usage
 from paicli.memory import LongTermMemory, MemoryManager, MemoryType
+from paicli.tool.tool_registry import ToolExecutionResult
 
 
 class FakeLLMClient:
@@ -31,6 +32,21 @@ class RecordingMemoryManager(MemoryManager):
     ) -> str:
         self.context_limits.append(max_tokens)
         return super().build_context_for_query(query, max_tokens=max_tokens, limit=limit)
+
+
+class BatchRecordingToolRegistry:
+    def __init__(self):
+        self.invocation_batches = []
+
+    def tools_for_llm(self):
+        return []
+
+    def execute_tools(self, invocations):
+        self.invocation_batches.append(list(invocations))
+        return [
+            ToolExecutionResult.completed(invocation, f"result:{invocation.name}", 1)
+            for invocation in invocations
+        ]
 
 
 class AgentTest(unittest.TestCase):
@@ -120,6 +136,39 @@ class AgentTest(unittest.TestCase):
         result = agent.run("一直列目录")
 
         self.assertEqual(result, "达到最大迭代次数限制")
+
+    def test_run_executes_multiple_tool_calls_through_batch_entrypoint(self) -> None:
+        llm = FakeLLMClient(
+            [
+                ChatResponse(
+                    message=Message.assistant(
+                        content="",
+                        tool_calls=[
+                            ToolCall(
+                                id="call_1",
+                                function=FunctionCall(name="read_file", arguments=json.dumps({"path": "a.txt"})),
+                            ),
+                            ToolCall(
+                                id="call_2",
+                                function=FunctionCall(name="read_file", arguments=json.dumps({"path": "b.txt"})),
+                            ),
+                        ],
+                    ),
+                    finish_reason="tool_calls",
+                ),
+                ChatResponse(message=Message.assistant("完成")),
+            ]
+        )
+        registry = BatchRecordingToolRegistry()
+        agent = Agent(api_key="test-key", llm_client=llm, tool_registry=registry)
+
+        result = agent.run("同时读两个文件")
+
+        self.assertEqual(result, "完成")
+        self.assertEqual(len(registry.invocation_batches), 1)
+        self.assertEqual([inv.id for inv in registry.invocation_batches[0]], ["call_1", "call_2"])
+        self.assertEqual(agent.conversation_history[-3].tool_call_id, "call_1")
+        self.assertEqual(agent.conversation_history[-2].tool_call_id, "call_2")
 
     def test_clear_history_keeps_system_prompt(self) -> None:
         agent = Agent(api_key="test-key", llm_client=FakeLLMClient([]))

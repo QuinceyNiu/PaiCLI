@@ -253,6 +253,24 @@ def print_plan_update(snapshot: str) -> None:
     print()
 
 
+def format_plan_summary(plan: ExecutionPlan) -> str:
+    batches = plan.get_execution_batches()
+    first_batch = batches[0] if batches else []
+    executable = [task for task in plan.tasks.values() if task.is_executable(plan.tasks)]
+    final_batch = batches[-1] if batches else []
+
+    lines = [
+        "📋 计划摘要",
+        f"- 目标: {plan.goal}",
+        f"- 任务数: {len(plan.tasks)} | 并行批次: {len(batches)} | 当前可执行: {len(executable)} | 状态: {plan.status.value}",
+    ]
+    if first_batch:
+        lines.append("- 首批执行: " + ", ".join(task.id for task in first_batch))
+    if final_batch and final_batch != first_batch:
+        lines.append("- 最终收敛: " + ", ".join(task.id for task in final_batch))
+    return "\n".join(lines)
+
+
 def handle_plan_interaction(
     user_input: str,
     agent: PlanAgentLike,
@@ -264,6 +282,8 @@ def handle_plan_interaction(
     while True:
         plan = agent.create_plan(goal)
         print(plan.visualize(), file=output)
+        print(file=output)
+        print(format_plan_summary(plan), file=output)
         print(file=output)
         answer = input_func("是否执行该计划？(y=执行 / n=取消 / 其他内容=补充要求后重新规划): ").strip()
 
@@ -338,7 +358,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     print()
     print("💡 提示:")
     print("   - 输入你的问题或任务")
-    print("   - 输入 '/plan' 进入计划模式")
+    print("   - 输入 '/plan' 进入计划模式，或 '/plan 任务' 直接规划任务")
     print("   - 输入 '/team' 后，下一条任务使用 Multi-Agent 团队模式")
     print("   - 输入 '/hitl [on|off]' 查看或切换人工审批")
     print("   - 输入 '/memory' 查看记忆和 Token 状态")
@@ -365,6 +385,17 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         if user_input.lower() == "/plan":
             plan_mode = True
             print("🧭 已进入计划模式，请输入复杂任务。\n")
+            continue
+        if user_input.lower().startswith("/plan "):
+            plan_goal = user_input[len("/plan") :].strip()
+            if not plan_goal:
+                plan_mode = True
+                print("🧭 已进入计划模式，请输入复杂任务。\n")
+                continue
+            print("🧭 使用 Plan-and-Execute 模式")
+            print()
+            handle_plan_interaction(plan_goal, plan_agent, input_func=input, output=sys.stdout)
+            plan_mode = False
             continue
         if user_input.lower() == "/team":
             team_mode = True
@@ -409,7 +440,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             continue
 
         if plan_mode:
-            handle_plan_interaction(user_input, plan_agent)
+            handle_plan_interaction(user_input, plan_agent, input_func=input, output=sys.stdout)
             plan_mode = False
         elif team_mode:
             handle_team_interaction(user_input, team_agent, output=sys.stdout)

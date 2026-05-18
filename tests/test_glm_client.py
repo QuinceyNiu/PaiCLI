@@ -52,6 +52,37 @@ class GLMClientRequestTest(unittest.TestCase):
         self.assertEqual(payload["tools"][0]["type"], "function")
         self.assertEqual(payload["tools"][0]["function"]["parameters"]["required"], ["path", "content"])
 
+    def test_build_chat_payload_replaces_lone_surrogates_before_json_encoding(self) -> None:
+        client = GLMClient(api_key="test-key")
+        messages = [
+            Message.user("读取 pyproject.toml\udce8了解依赖"),
+            Message.assistant(
+                "",
+                [
+                    ToolCall(
+                        id="call_\udce8",
+                        function=FunctionCall(
+                            name="read_file",
+                            arguments='{"path": "README.md\udce8"}',
+                        ),
+                    )
+                ],
+            ),
+            Message.tool("call_\udce8", "结果\udce8"),
+        ]
+        tools = [
+            Tool(
+                name="read_file",
+                description="读取\udce8文件",
+                parameters={"type": "object", "properties": {"path": {"description": "路径\udce8"}}},
+            )
+        ]
+
+        payload = client.build_chat_payload(messages, tools)
+
+        encoded = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+        self.assertIn("�", encoded.decode("utf-8"))
+
     def test_parses_tool_call_response(self) -> None:
         client = GLMClient(api_key="test-key")
         response = client.parse_chat_response({

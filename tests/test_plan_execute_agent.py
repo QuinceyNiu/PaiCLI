@@ -1,5 +1,7 @@
 import tempfile
+import time
 import unittest
+import json
 from pathlib import Path
 
 from paicli.agent.plan_execute_agent import PlanExecuteAgent
@@ -7,7 +9,7 @@ from paicli.plan.planner import PLANNING_PROMPT
 from paicli.memory import LongTermMemory, MemoryManager
 from paicli.plan.execution_plan import ExecutionPlan, PlanStatus
 from paicli.plan.task import Task, TaskStatus, TaskType
-from paicli.tool.tool_registry import ToolRegistry
+from paicli.tool.tool_registry import ToolExecutionResult, ToolRegistry
 
 
 class FakePlanner:
@@ -46,6 +48,26 @@ class FakeMemoryManager:
     def extract_and_save_facts(self):
         self.extracted = True
         return ["执行计划完成"]
+
+
+class SlowBatchToolRegistry:
+    def __init__(self):
+        self.batches = []
+
+    def execute_tools(self, invocations):
+        self.batches.append(list(invocations))
+        import concurrent.futures
+
+        def run(invocation):
+            time.sleep(float(json.loads(invocation.arguments_json)["delay"]))
+            return ToolExecutionResult.completed(
+                invocation,
+                f"done:{invocation.id}",
+                1,
+            )
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=len(invocations)) as executor:
+            return list(executor.map(run, invocations))
 
 
 def temp_memory_manager(tmp: str) -> MemoryManager:
@@ -189,6 +211,44 @@ class PlanExecuteAgentTest(unittest.TestCase):
             self.assertEqual(memory_manager.context_queries, [("写入 hello.txt", 5)])
             self.assertEqual(memory_manager.tool_results[0][0], "write_file")
             self.assertTrue(memory_manager.extracted)
+
+    def test_execute_plan_runs_same_dependency_batch_in_parallel(self) -> None:
+        plan = ExecutionPlan("plan_parallel", "并行读取")
+        first = Task(
+            "task_1",
+            "读取 A",
+            TaskType.FILE_READ,
+            arguments={"path": "a.txt", "delay": "0.2"},
+        )
+        second = Task(
+            "task_2",
+            "读取 B",
+            TaskType.FILE_READ,
+            arguments={"path": "b.txt", "delay": "0.2"},
+        )
+        final = Task("task_3", "汇总", TaskType.ANALYSIS, dependencies=["task_1", "task_2"])
+        plan.add_task(first)
+        plan.add_task(second)
+        plan.add_task(final)
+        self.assertTrue(plan.compute_execution_order())
+        registry = SlowBatchToolRegistry()
+        agent = PlanExecuteAgent(
+            api_key="test-key",
+            planner=FakePlanner(plan),
+            react_agent=FakeReactAgent(),
+            tool_registry=registry,
+            memory_manager=FakeMemoryManager(),
+        )
+
+        started = time.perf_counter()
+        agent.execute_plan(plan)
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.35)
+        self.assertEqual([[inv.id for inv in batch] for batch in registry.batches], [["task_1", "task_2"]])
+        self.assertEqual(first.status, TaskStatus.COMPLETED)
+        self.assertEqual(second.status, TaskStatus.COMPLETED)
+        self.assertEqual(final.status, TaskStatus.COMPLETED)
 
 
     def test_complex_task_emits_plan_snapshots_as_status_changes(self) -> None:

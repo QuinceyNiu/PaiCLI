@@ -2,14 +2,13 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from typing import Any, Protocol
 
 from paicli.agent.agent_message import AgentMessage, AgentMessageType
 from paicli.agent.agent_role import AgentRole
 from paicli.llm.glm_client import ChatResponse, Message, ToolCall
-from paicli.tool.tool_registry import ToolRegistry
+from paicli.tool.tool_registry import ToolInvocation, ToolRegistry
 
 
 LOGGER = logging.getLogger(__name__)
@@ -50,6 +49,7 @@ WORKER_PROMPT = """
 6. search_code - 语义检索代码库（如果可用）
 
 如果任务涉及理解代码库，请优先使用 search_code 工具；如果 search_code 不可用，再使用 read_file、list_dir 等工具。
+同一轮返回多个工具调用时，系统会并行执行这些工具；如果工具之间有依赖关系，请分多轮调用。
 请用中文简洁汇报执行结果。
 """.strip()
 
@@ -107,9 +107,9 @@ class SubAgent:
                 self.conversation_history.append(
                     Message.assistant(assistant_message.content or "", assistant_message.tool_calls)
                 )
-                for tool_call in assistant_message.tool_calls:
-                    result = self._execute_tool_call(tool_call)
-                    self.conversation_history.append(Message.tool(tool_call.id, result))
+                tool_results = self._execute_tool_calls(assistant_message.tool_calls)
+                for tool_result in tool_results:
+                    self.conversation_history.append(Message.tool(tool_result.id, tool_result.result))
                 continue
 
             content = assistant_message.content or ""
@@ -135,19 +135,12 @@ class SubAgent:
     def should_use_tools(self) -> bool:
         return self.role == AgentRole.WORKER
 
-    def _execute_tool_call(self, tool_call: ToolCall) -> str:
-        try:
-            raw_args = tool_call.function.arguments or "{}"
-            parsed_args = json.loads(raw_args)
-            if not isinstance(parsed_args, dict):
-                return "工具参数解析失败: arguments 必须是 JSON 对象"
-            args = {
-                str(key): value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
-                for key, value in parsed_args.items()
-            }
-        except Exception as exc:
-            return f"工具参数解析失败: {exc}"
-        return self.tool_registry.execute(tool_call.function.name, args)
+    def _execute_tool_calls(self, tool_calls: list[ToolCall]):
+        invocations = [
+            ToolInvocation(tool_call.id, tool_call.function.name, tool_call.function.arguments or "{}")
+            for tool_call in tool_calls
+        ]
+        return self.tool_registry.execute_tools(invocations)
 
     def _prompt_for_role(self, role: AgentRole) -> str:
         if role == AgentRole.PLANNER:

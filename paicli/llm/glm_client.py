@@ -180,30 +180,50 @@ class GLMClient:
     def _message_to_dict(self, message: Message) -> dict[str, Any]:
         data: dict[str, Any] = {
             "role": message.role,
-            "content": message.content,
+            "content": self._sanitize_text(message.content),
         }
         if message.tool_calls:
             data["tool_calls"] = [
                 {
-                    "id": tool_call.id,
-                    "type": tool_call.type,
+                    "id": self._sanitize_text(tool_call.id),
+                    "type": self._sanitize_text(tool_call.type),
                     "function": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments,
+                        "name": self._sanitize_text(tool_call.function.name),
+                        "arguments": self._sanitize_text(tool_call.function.arguments),
                     },
                 }
                 for tool_call in message.tool_calls
             ]
         if message.tool_call_id:
-            data["tool_call_id"] = message.tool_call_id
+            data["tool_call_id"] = self._sanitize_text(message.tool_call_id)
         return data
 
     def _tool_to_dict(self, tool: Tool) -> dict[str, Any]:
         return {
             "type": "function",
             "function": {
-                "name": tool.name,
-                "description": tool.description,
-                "parameters": tool.parameters,
+                "name": self._sanitize_text(tool.name),
+                "description": self._sanitize_text(tool.description),
+                "parameters": self._sanitize_json_value(tool.parameters),
             },
         }
+
+    def _sanitize_json_value(self, value: Any) -> Any:
+        if isinstance(value, str):
+            return self._sanitize_text(value)
+        if isinstance(value, list):
+            return [self._sanitize_json_value(item) for item in value]
+        if isinstance(value, dict):
+            return {
+                self._sanitize_text(str(key)): self._sanitize_json_value(item)
+                for key, item in value.items()
+            }
+        return value
+
+    def _sanitize_text(self, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        return "".join(
+            "\ufffd" if 0xD800 <= ord(character) <= 0xDFFF else character
+            for character in value
+        )

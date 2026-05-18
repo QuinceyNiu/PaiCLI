@@ -1,5 +1,6 @@
 import unittest
 import tempfile
+from pathlib import Path
 
 from paicli.memory import (
     ContextCompressor,
@@ -117,6 +118,18 @@ class MemoryManagerTest(unittest.TestCase):
 
             self.assertIn("用户喜欢 JDK", context)
             self.assertLessEqual(sum(line.count("JDK") for line in context.splitlines()), 1)
+
+    def test_build_context_for_query_omits_memories_with_missing_absolute_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            missing = Path(tmp) / "old" / "myapp"
+            manager = MemoryManager(long_term_memory=LongTermMemory(storage_dir=tmp))
+            manager.save_fact(f"项目路径：{missing}")
+            manager.save_fact("项目名称为 PaiCli")
+
+            context = manager.build_context_for_query("项目路径 PaiCli", max_tokens=500)
+
+            self.assertNotIn(str(missing), context)
+            self.assertIn("项目名称为 PaiCli", context)
 
     def test_get_system_status_combines_memory_and_token_reports(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

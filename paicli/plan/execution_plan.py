@@ -58,6 +58,27 @@ class ExecutionPlan:
 
         return True
 
+    def get_execution_batches(self) -> list[list[Task]]:
+        remaining = dict(self.tasks)
+        completed: set[str] = set()
+        batches: list[list[Task]] = []
+
+        while remaining:
+            batch = [
+                task
+                for task in remaining.values()
+                if all(dependency_id in completed for dependency_id in task.dependencies)
+            ]
+            if not batch:
+                break
+
+            batches.append(batch)
+            for task in batch:
+                remaining.pop(task.id, None)
+                completed.add(task.id)
+
+        return batches
+
     def mark_started(self) -> None:
         self.status = PlanStatus.RUNNING
         self.start_time = _now_ms()

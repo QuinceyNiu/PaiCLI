@@ -10,7 +10,7 @@ from typing import Any, Callable, Optional, Protocol
 
 from paicli.llm.glm_client import ChatResponse, GLMClient, Message, ToolCall
 from paicli.memory import MemoryManager
-from paicli.tool.tool_registry import ToolRegistry
+from paicli.tool.tool_registry import ToolExecutionResult, ToolInvocation, ToolRegistry
 
 
 LOGGER = logging.getLogger(__name__)
@@ -29,6 +29,7 @@ SYSTEM_PROMPT = """
 当需要操作文件、执行命令或创建项目时，请使用工具调用。
 如果用户询问与代码库相关的问题（例如“这个类是干什么的”、“某个方法怎么实现”、“哪里用了某个功能”），请优先使用 search_code 检索相关代码，再基于检索结果回答。
 使用工具后，根据工具返回的结果继续思考下一步行动。
+同一轮返回多个工具调用时，系统会并行执行这些工具；如果工具之间有依赖关系，请分多轮调用。
 
 请用中文回复用户。
 """.strip()
@@ -86,7 +87,7 @@ class Agent:
         self._update_system_prompt_with_memory(memory_context)
         self.conversation_history.append(Message.user(user_input))
 
-        for _ in range(self.max_iterations):
+        for iteration in range(self.max_iterations):
             self._emit(AgentEvent(type="thinking"))
             try:
                 response = self.llm_client.chat(
@@ -104,18 +105,19 @@ class Agent:
                 self.conversation_history.append(
                     Message.assistant(message.content or "", message.tool_calls)
                 )
-                for tool_call in message.tool_calls:
-                    result, args = self._execute_tool_call(tool_call)
+                tool_results = self._execute_tool_calls(message.tool_calls, iteration)
+                for tool_call, tool_result in zip(message.tool_calls, tool_results):
+                    args = self._parse_tool_args(tool_call)
                     self._emit(
                         AgentEvent(
                             type="tool",
                             tool_name=tool_call.function.name,
                             arguments=args,
-                            result=result,
+                            result=tool_result.result,
                         )
                     )
-                    self.conversation_history.append(Message.tool(tool_call.id, result))
-                    self.memory_manager.add_tool_result(tool_call.function.name, result)
+                    self.conversation_history.append(Message.tool(tool_result.id, tool_result.result))
+                    self.memory_manager.add_tool_result(tool_result.name, tool_result.result)
                 continue
 
             content = message.content or ""
@@ -154,17 +156,38 @@ class Agent:
             )
         )
 
-    def _execute_tool_call(self, tool_call: ToolCall) -> tuple[str, dict[str, str]]:
+    def _execute_tool_calls(
+        self,
+        tool_calls: list[ToolCall],
+        iteration: int,
+    ) -> list[ToolExecutionResult]:
+        invocations: list[ToolInvocation] = []
+        for tool_call in tool_calls:
+            tool_name = tool_call.function.name
+            raw_args = tool_call.function.arguments or "{}"
+            LOGGER.info("Scheduling tool: %s (iteration=%s)", tool_name, iteration)
+            invocations.append(ToolInvocation(tool_call.id, tool_name, raw_args))
+
+        if len(invocations) > 1:
+            LOGGER.info(
+                "Executing %s tool calls in parallel (iteration=%s)",
+                len(invocations),
+                iteration,
+            )
+        return self.tool_registry.execute_tools(invocations)
+
+    def _parse_tool_args(self, tool_call: ToolCall) -> dict[str, str]:
         try:
             raw_args = tool_call.function.arguments or "{}"
             parsed_args = json.loads(raw_args)
             if not isinstance(parsed_args, dict):
-                return "工具参数解析失败: arguments 必须是 JSON 对象", {}
+                return {}
             args = {
                 str(key): value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)
                 for key, value in parsed_args.items()
             }
         except Exception as exc:
-            return f"工具参数解析失败: {exc}", {}
+            LOGGER.debug("Tool argument parsing failed for event payload: %s", exc)
+            return {}
 
-        return self.tool_registry.execute(tool_call.function.name, args), args
+        return args

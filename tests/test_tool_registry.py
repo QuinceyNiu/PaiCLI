@@ -1,10 +1,16 @@
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 
 from paicli.rag import CodeChunk, SearchResult
-from paicli.tool.tool_registry import ToolRegistry, create_parameters
+from paicli.tool.tool_registry import (
+    RegisteredTool,
+    ToolInvocation,
+    ToolRegistry,
+    create_parameters,
+)
 
 
 class FakeRetriever:
@@ -49,6 +55,16 @@ class ToolRegistryTest(unittest.TestCase):
             self.assertIn("文件已写入", write_result)
             self.assertIn("hello pai", read_result)
             self.assertIn("hello.txt", list_result)
+
+    def test_read_file_missing_absolute_path_mentions_project_root(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = ToolRegistry(base_dir=tmp)
+
+            result = registry.execute("read_file", {"path": f"{tmp}/old/myapp/README.md"})
+
+            self.assertIn("读取文件失败", result)
+            self.assertIn("当前项目根目录", result)
+            self.assertIn(tmp, result)
 
     def test_execute_command_returns_exit_code_and_output(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -100,6 +116,84 @@ class ToolRegistryTest(unittest.TestCase):
         registry = ToolRegistry(code_retriever_factory=FakeRetriever)
 
         self.assertIn("query 不能为空", registry.execute("search_code", {"query": ""}))
+
+    def test_execute_tools_runs_independent_tools_in_parallel_and_preserves_order(self) -> None:
+        registry = ToolRegistry()
+
+        def slow_echo(args):
+            time.sleep(float(args["delay"]))
+            return args["value"]
+
+        registry.register(
+            RegisteredTool(
+                name="slow_echo",
+                description="测试慢工具",
+                parameters=create_parameters(("value", "string", "值", True)),
+                executor=slow_echo,
+            )
+        )
+
+        started = time.perf_counter()
+        results = registry.execute_tools(
+            [
+                ToolInvocation("call_1", "slow_echo", json.dumps({"value": "first", "delay": "0.2"})),
+                ToolInvocation("call_2", "slow_echo", json.dumps({"value": "second", "delay": "0.05"})),
+            ]
+        )
+        elapsed = time.perf_counter() - started
+
+        self.assertLess(elapsed, 0.35)
+        self.assertEqual([result.id for result in results], ["call_1", "call_2"])
+        self.assertEqual([result.result for result in results], ["first", "second"])
+        self.assertTrue(all(not result.timed_out for result in results))
+
+    def test_execute_tools_reports_batch_timeout_without_losing_completed_results(self) -> None:
+        registry = ToolRegistry(tool_batch_timeout_seconds=0.05)
+
+        def slow_echo(args):
+            time.sleep(float(args["delay"]))
+            return args["value"]
+
+        registry.register(
+            RegisteredTool(
+                name="slow_echo",
+                description="测试慢工具",
+                parameters=create_parameters(("value", "string", "值", True)),
+                executor=slow_echo,
+            )
+        )
+
+        results = registry.execute_tools(
+            [
+                ToolInvocation("fast", "slow_echo", json.dumps({"value": "fast", "delay": "0.01"})),
+                ToolInvocation("slow", "slow_echo", json.dumps({"value": "slow", "delay": "0.3"})),
+            ]
+        )
+
+        self.assertEqual(results[0].result, "fast")
+        self.assertFalse(results[0].timed_out)
+        self.assertTrue(results[1].timed_out)
+        self.assertIn("工具执行超时", results[1].result)
+
+    def test_execute_command_truncates_large_output(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            registry = ToolRegistry(base_dir=tmp)
+
+            result = registry.execute(
+                "execute_command",
+                {"command": "python -c \"print('x' * 9000)\""},
+            )
+
+            self.assertLess(len(result), 8400)
+            self.assertIn("输出已截断", result)
+
+    def test_execute_command_rejects_broad_find_scans(self) -> None:
+        registry = ToolRegistry()
+
+        result = registry.execute("execute_command", {"command": "find / -name '*.py'"})
+
+        self.assertIn("禁止执行全盘扫描", result)
+        self.assertIn("search_code", result)
 
 
 if __name__ == "__main__":

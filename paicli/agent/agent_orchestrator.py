@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import json
 import re
+import inspect
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from queue import Queue
-from threading import Lock
 from typing import Callable, Optional
 
 from paicli.agent.agent_message import AgentMessage, AgentMessageType
@@ -45,7 +45,6 @@ class AgentOrchestrator:
             SubAgent("worker-2", AgentRole.WORKER, self.llm_client, self.tool_registry),
         ]
         self.reviewer = SubAgent("reviewer", AgentRole.REVIEWER, self.llm_client, self.tool_registry)
-        self._review_lock = Lock()
 
     def run(self, user_input: str) -> str:
         self.memory_manager.add_user_message(user_input)
@@ -123,8 +122,9 @@ class AgentOrchestrator:
         if len(batch) == 1:
             worker = worker_pool.get()
             try:
-                self.run_step(batch[0], all_steps, worker)
+                self._call_run_step(batch[0], all_steps, worker, emit=None, reviewer=self.reviewer)
             finally:
+                worker.clear_history()
                 worker_pool.put(worker)
             return
 
@@ -153,8 +153,10 @@ class AgentOrchestrator:
         all_steps: list[ExecutionStep],
         worker: SubAgent,
         emit: Callable[[str], None] | None = None,
+        reviewer: SubAgent | None = None,
     ) -> None:
         emit = emit or self._emit
+        reviewer = reviewer or self.reviewer
         step.mark_started()
         context = self.build_step_context(all_steps, step)
         result = ""
@@ -172,11 +174,10 @@ class AgentOrchestrator:
             worker.clear_history()
 
             emit(f"🔍 reviewer 正在审查步骤 [{step.id}] 的结果...")
-            with self._review_lock:
-                review_message = self.reviewer.review(step.description, result)
-                review_content = review_message.content
-                approved = self.parse_review_approval(review_content)
-                self.reviewer.clear_history()
+            review_message = reviewer.review(step.description, result)
+            review_content = review_message.content
+            approved = self.parse_review_approval(review_content)
+            reviewer.clear_history()
             if approved:
                 emit(f"✅ 步骤 [{step.id}] 审查通过")
                 step.mark_completed(result, review_content)
@@ -289,10 +290,31 @@ class AgentOrchestrator:
         emit: Callable[[str], None],
     ) -> None:
         worker = worker_pool.get()
+        local_reviewer = SubAgent(
+            f"reviewer-{step.id}",
+            AgentRole.REVIEWER,
+            self.llm_client,
+            self.tool_registry,
+        )
         try:
-            self.run_step(step, all_steps, worker, emit=emit)
+            self._call_run_step(step, all_steps, worker, emit=emit, reviewer=local_reviewer)
         finally:
+            worker.clear_history()
             worker_pool.put(worker)
+
+    def _call_run_step(
+        self,
+        step: ExecutionStep,
+        all_steps: list[ExecutionStep],
+        worker: SubAgent,
+        emit: Callable[[str], None] | None,
+        reviewer: SubAgent,
+    ) -> None:
+        parameters = inspect.signature(self.run_step).parameters
+        if "reviewer" in parameters:
+            self.run_step(step, all_steps, worker, emit=emit, reviewer=reviewer)
+        else:
+            self.run_step(step, all_steps, worker, emit=emit)
 
     def _build_worker_task(self, step: ExecutionStep, context: str, review_content: str) -> str:
         lines = [

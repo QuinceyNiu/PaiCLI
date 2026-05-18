@@ -13,6 +13,7 @@ from paicli.cli.main import (
     format_agent_event,
     format_graph_report,
     format_memory_report,
+    format_plan_summary,
     format_startup_status,
     handle_team_interaction,
     handle_plan_interaction,
@@ -307,7 +308,25 @@ class CliTest(unittest.TestCase):
         self.assertEqual(agent.created_goals, ["创建 Java 项目，然后写 Hello 类，接着编译运行"])
         self.assertEqual(len(agent.executed_plans), 1)
         self.assertIn("执行计划", output.getvalue())
+        self.assertIn("计划摘要", output.getvalue())
         self.assertIn("执行完成", output.getvalue())
+
+    def test_format_plan_summary_shows_parallel_first_batch(self) -> None:
+        plan = ExecutionPlan("plan_parallel", "读取多个文件后汇总")
+        first = Task("task_1", "读取 pyproject.toml", TaskType.FILE_READ)
+        second = Task("task_2", "读取 README.md", TaskType.FILE_READ)
+        final = Task("task_3", "汇总", TaskType.ANALYSIS, dependencies=["task_1", "task_2"])
+        plan.add_task(first)
+        plan.add_task(second)
+        plan.add_task(final)
+        plan.compute_execution_order()
+
+        summary = format_plan_summary(plan)
+
+        self.assertIn("任务数: 3", summary)
+        self.assertIn("并行批次: 2", summary)
+        self.assertIn("当前可执行: 2", summary)
+        self.assertIn("首批执行: task_1, task_2", summary)
 
     def test_handle_plan_interaction_replans_when_user_adds_context(self) -> None:
         agent = FakePlanAgent()
@@ -394,6 +413,45 @@ class CliTest(unittest.TestCase):
         self.assertIn("🤝 已进入 Multi-Agent 团队模式", rendered)
         self.assertIn("🤝 Team: team 完成", rendered)
         self.assertIn("🤖 Agent: react 完成", rendered)
+
+    def test_main_inline_plan_command_runs_plan_interaction_immediately(self) -> None:
+        class FakeAgent:
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                self.inputs = []
+                FakeAgent.instances.append(self)
+
+            def run(self, user_input):
+                self.inputs.append(user_input)
+                return "react 完成"
+
+        class FakePlanExecuteAgent(FakePlanAgent):
+            instances = []
+
+            def __init__(self, *args, **kwargs):
+                super().__init__()
+                FakePlanExecuteAgent.instances.append(self)
+
+        class FakeAgentOrchestrator:
+            def __init__(self, *args, **kwargs):
+                pass
+
+        inputs = iter(["/plan 分析 PaiCLI 项目", "y", "exit"])
+        output = StringIO()
+
+        with patch("paicli.cli.main.load_api_key", return_value="test-key"), \
+            patch("paicli.cli.main.Agent", FakeAgent), \
+            patch("paicli.cli.main.PlanExecuteAgent", FakePlanExecuteAgent), \
+            patch("paicli.cli.main.AgentOrchestrator", FakeAgentOrchestrator), \
+            patch("builtins.input", lambda _: next(inputs)), \
+            patch("sys.stdout", output):
+            self.assertEqual(main([]), 0)
+
+        self.assertEqual(FakePlanExecuteAgent.instances[0].created_goals, ["分析 PaiCLI 项目"])
+        self.assertEqual(len(FakePlanExecuteAgent.instances[0].executed_plans), 1)
+        self.assertEqual(FakeAgent.instances[0].inputs, [])
+        self.assertIn("🧭 使用 Plan-and-Execute 模式", output.getvalue())
 
     def test_main_graph_command_prints_relationship_report(self) -> None:
         class FakeAgent:
