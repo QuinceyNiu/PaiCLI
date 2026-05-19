@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from paicli.agent.agent import AgentEvent
+from paicli.agent.agent import SYSTEM_PROMPT
 from paicli.cli.main import (
     BANNER,
     clear_agent_history,
@@ -114,6 +115,10 @@ class CliTest(unittest.TestCase):
 
         self.assertIn("✅ API Key 已加载", status)
         self.assertIn("🔄 使用 ReAct 模式", status)
+
+    def test_system_prompt_mentions_web_tools(self) -> None:
+        self.assertIn("web_search", SYSTEM_PROMPT)
+        self.assertIn("web_fetch", SYSTEM_PROMPT)
 
     def test_load_api_key_prefers_env_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

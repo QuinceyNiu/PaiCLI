@@ -133,6 +133,7 @@ class ToolRegistry:
         self._register_file_tools()
         self._register_shell_tools()
         self._register_code_tools()
+        self._register_web_tools()
 
         for provider in providers or []:
             for tool in provider.get_tools():
@@ -295,6 +296,12 @@ class ToolRegistry:
                 executor=self._search_code,
             )
         )
+
+    def _register_web_tools(self) -> None:
+        from paicli.web import WebToolProvider
+
+        for tool in WebToolProvider().get_tools():
+            self.register(tool)
 
     def _read_file(self, args: Mapping[str, str]) -> str:
         path = self._resolve(args.get("path", ""))

@@ -11,7 +11,8 @@ PaiCli is a Python CLI agent project focused on practical coding-assistant workf
 - **Code Graph Queries**: stores simple code relations and lets you inspect class or method relationships.
 - **Multi-Agent Mode**: coordinates planner, executor, and reviewer-style roles for larger tasks.
 - **HITL Approval**: wraps tools with human approval policies so sensitive operations can require confirmation.
-- **CLI Tooling**: includes file, directory, shell-command, project-creation, and code-search tools.
+- **Web Search and Fetch**: searches live web results and fetches static/SSR pages as Markdown for up-to-date answers.
+- **CLI Tooling**: includes file, directory, shell-command, project-creation, code-search, and web tools.
 
 ## Project Structure
 
@@ -25,7 +26,8 @@ PaiCli is a Python CLI agent project focused on practical coding-assistant workf
 │   ├── memory/     # Conversation memory, long-term memory, and token budgeting
 │   ├── plan/       # Task and execution-plan models
 │   ├── rag/        # Code indexing, chunking, embedding, retrieval, and formatting
-│   └── tool/       # Tool registry and HITL-aware tool registry
+│   ├── tool/       # Tool registry and HITL-aware tool registry
+│   └── web/        # Web search providers, fetch policy, and HTML extraction
 ├── tests/          # Unit tests
 ├── pyproject.toml  # Package metadata and console script
 └── .env.example    # Example environment configuration
@@ -61,6 +63,20 @@ GLM_API_KEY=your_api_key_here
 ```
 
 Optional variables such as `GLM_BASE_URL` and `GLM_MODEL` can also be configured in `.env`.
+
+Web search works with no extra setup when `GLM_API_KEY` is present. PaiCli will reuse it for Zhipu web search by default. To switch providers:
+
+```bash
+# SerpAPI
+SEARCH_PROVIDER=serpapi
+SERPAPI_KEY=your_serpapi_key_here
+
+# SearXNG
+SEARCH_PROVIDER=searxng
+SEARXNG_URL=http://localhost:8888
+```
+
+The agent can call `web_search` for live information and `web_fetch` when it already has a URL to inspect.
 
 ## Usage
 

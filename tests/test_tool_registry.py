@@ -97,6 +97,14 @@ class ToolRegistryTest(unittest.TestCase):
         self.assertTrue(any(tool.name == "read_file" for tool in tools))
         self.assertTrue(all(hasattr(tool, "parameters") for tool in tools))
 
+    def test_default_registry_exposes_web_tools_to_llm(self) -> None:
+        registry = ToolRegistry()
+
+        tool_names = {tool.name for tool in registry.tools_for_llm()}
+
+        self.assertIn("web_search", tool_names)
+        self.assertIn("web_fetch", tool_names)
+
     def test_search_code_tool_uses_retriever_and_formats_results(self) -> None:
         retriever = FakeRetriever()
         registry = ToolRegistry(
