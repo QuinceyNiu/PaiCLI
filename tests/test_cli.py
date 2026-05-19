@@ -16,6 +16,7 @@ from paicli.cli.main import (
     format_memory_report,
     format_plan_summary,
     format_startup_status,
+    format_mcp_status,
     handle_team_interaction,
     handle_plan_interaction,
     handle_hitl_command,
@@ -116,9 +117,17 @@ class CliTest(unittest.TestCase):
         self.assertIn("✅ API Key 已加载", status)
         self.assertIn("🔄 使用 ReAct 模式", status)
 
+    def test_format_mcp_status_reports_configured_and_missing_servers(self) -> None:
+        self.assertEqual(format_mcp_status([]), "🔌 MCP server：未配置")
+
+        status = format_mcp_status(["filesystem", "zread"])
+
+        self.assertEqual(status, "🔌 MCP server：filesystem, zread")
+
     def test_system_prompt_mentions_web_tools(self) -> None:
         self.assertIn("web_search", SYSTEM_PROMPT)
         self.assertIn("web_fetch", SYSTEM_PROMPT)
+        self.assertIn("MCP", SYSTEM_PROMPT)
 
     def test_load_api_key_prefers_env_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

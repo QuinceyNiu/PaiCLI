@@ -12,6 +12,7 @@ PaiCli is a Python CLI agent project focused on practical coding-assistant workf
 - **Multi-Agent Mode**: coordinates planner, executor, and reviewer-style roles for larger tasks.
 - **HITL Approval**: wraps tools with human approval policies so sensitive operations can require confirmation.
 - **Web Search and Fetch**: searches live web results and fetches static/SSR pages as Markdown for up-to-date answers.
+- **MCP Integration**: connects third-party MCP servers over stdio or Streamable HTTP and exposes their tools to the agent.
 - **CLI Tooling**: includes file, directory, shell-command, project-creation, code-search, and web tools.
 
 ## Project Structure
@@ -78,6 +79,35 @@ SEARXNG_URL=http://localhost:8888
 
 The agent can call `web_search` for live information and `web_fetch` when it already has a URL to inspect.
 
+### MCP
+
+PaiCli reads MCP server configuration from two locations:
+
+- User-level: `~/.paicli/mcp.json`
+- Project-level: `.paicli/mcp.json`
+
+Both files use a Claude Code-compatible `mcpServers` object. User-level config is loaded first, then project-level config overrides servers with the same name.
+
+```json
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "${PROJECT_DIR}"],
+      "env": { "NODE_OPTIONS": "--max-old-space-size=256" }
+    },
+    "zread": {
+      "url": "https://open.bigmodel.cn/api/mcp/zread/mcp",
+      "headers": {
+        "Authorization": "Bearer ${GLM_API_KEY}"
+      }
+    }
+  }
+}
+```
+
+PaiCli supports stdio MCP servers through `command`/`args` and Streamable HTTP servers through `url`/`headers`. Built-in placeholders include `${PROJECT_DIR}`, `${HOME}`, and environment variables such as `${GLM_API_KEY}`.
+
 ## Usage
 
 Run the CLI after installing the package:
@@ -98,6 +128,11 @@ Common interactive commands:
 /plan                 Enter Plan-and-Execute mode for the next complex task
 /team                 Run the next task through the Multi-Agent workflow
 /hitl [on|off]        View or toggle human-in-the-loop approval
+/mcp                  Show MCP server status
+/mcp restart <name>   Restart an MCP server
+/mcp logs <name>      Show recent stderr logs for an MCP server
+/mcp disable <name>   Disable an MCP server for this session
+/mcp enable <name>    Re-enable an MCP server for this session
 /memory               Show memory and token status
 /index [path]         Index a codebase for RAG search
 /search <query>       Search the indexed codebase
@@ -127,3 +162,4 @@ git commit -m "chore: prepare python project structure"
 
 - `.env`, virtual environments, caches, build outputs, IDE metadata, and generated package metadata are ignored by Git.
 - Keep new feature work inside focused modules under `paicli/`, with matching tests under `tests/`.
+- MCP tools are registered as `mcp__<server>__<tool>` to avoid name collisions and to route third-party tool calls through HITL approval.

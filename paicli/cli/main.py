@@ -12,11 +12,18 @@ from typing import Callable, Iterable, Optional, Protocol, TextIO
 from paicli.agent.agent import Agent, AgentEvent
 from paicli.agent.agent_orchestrator import AgentOrchestrator
 from paicli.agent.plan_execute_agent import PlanExecuteAgent
+from paicli.hitl import TerminalHitlHandler
 from paicli.llm.glm_client import GLMClient
 from paicli.memory import MemoryManager
+from paicli.mcp import (
+    DEFAULT_MCP_CONFIG_PATH,
+    PROJECT_MCP_CONFIG_PATH,
+    McpConfig,
+    McpServerManager,
+    McpToolProvider,
+)
 from paicli.plan.execution_plan import ExecutionPlan
 from paicli.rag import CodeIndex, CodeRetriever, EmbeddingClient, SearchResultFormatter, VectorStore
-from paicli.hitl import TerminalHitlHandler
 from paicli.tool.hitl_tool_registry import HitlToolRegistry
 from paicli.tool.tool_registry import ToolRegistry
 
@@ -185,6 +192,78 @@ def format_startup_status(api_key_loaded: bool, plan_mode: bool) -> str:
     return f"{api_status}\n{mode_status}"
 
 
+def format_mcp_status(server_names: list[str]) -> str:
+    if not server_names:
+        return "🔌 MCP server：未配置"
+    return "🔌 MCP server：" + ", ".join(server_names)
+
+
+def format_mcp_table(manager: McpServerManager) -> str:
+    runtimes = manager.runtimes()
+    if not runtimes:
+        return "🔌 MCP server：未配置"
+    lines = ["🔌 MCP server 状态:"]
+    for runtime in runtimes:
+        status = {
+            "ready": "● ready",
+            "error": "✗ error",
+            "disabled": "○ disabled",
+        }.get(runtime.status, runtime.status)
+        uptime = _format_uptime(runtime.uptime_seconds)
+        pid = f" | PID {runtime.pid}" if runtime.pid else ""
+        error = f" | {runtime.error}" if runtime.error else ""
+        lines.append(
+            f"{runtime.config.name}: {status} | {runtime.config.transport} | "
+            f"{len(runtime.tools)} tools | {uptime}{pid}{error}"
+        )
+    return "\n".join(lines)
+
+
+def handle_mcp_command(argument: str, manager: McpServerManager, registry: ToolRegistry) -> str:
+    parts = argument.strip().split()
+    if not parts:
+        return format_mcp_table(manager)
+    command = parts[0].lower()
+    name = parts[1] if len(parts) > 1 else ""
+    if command in {"restart", "enable", "disable", "logs"} and not name:
+        return f"⚠️ 用法: /mcp {command} <name>"
+    if command == "restart":
+        result = manager.restart(name)
+        refresh_mcp_tools(registry, manager)
+        return result
+    if command == "enable":
+        result = manager.enable(name)
+        refresh_mcp_tools(registry, manager)
+        return result
+    if command == "disable":
+        result = manager.disable(name)
+        refresh_mcp_tools(registry, manager)
+        return result
+    if command == "logs":
+        return manager.logs(name)
+    return "⚠️ 用法: /mcp [restart|logs|disable|enable] <name>"
+
+
+def refresh_mcp_tools(registry: ToolRegistry, manager: McpServerManager) -> None:
+    if not manager.runtimes():
+        return
+    registry.unregister_by_prefix("mcp__")
+    for tool in McpToolProvider(manager=manager).get_tools():
+        registry.register(tool)
+
+
+def _format_uptime(seconds: int) -> str:
+    if seconds <= 0:
+        return "0s"
+    minutes, remainder = divmod(seconds, 60)
+    if minutes <= 0:
+        return f"{remainder}s"
+    hours, minutes = divmod(minutes, 60)
+    if hours <= 0:
+        return f"{minutes}m"
+    return f"{hours}h{minutes}m"
+
+
 def save_memory_fact(memory_manager: MemoryManager, fact: str) -> str:
     cleaned = fact.strip()
     if not cleaned:
@@ -326,7 +405,15 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     vector_store: VectorStore | None = None
     llm_client = GLMClient(api_key)
     hitl_handler = TerminalHitlHandler(False)
+    mcp_config = McpConfig.load_merged(
+        user_path=DEFAULT_MCP_CONFIG_PATH,
+        project_path=PROJECT_MCP_CONFIG_PATH,
+        project_dir=Path.cwd(),
+    )
+    mcp_manager = McpServerManager(mcp_config)
+    mcp_manager.start_all()
     tool_registry = HitlToolRegistry(hitl_handler)
+    refresh_mcp_tools(tool_registry, mcp_manager)
 
     def handle_agent_event(event: AgentEvent) -> None:
         print_agent_event(event)
@@ -355,12 +442,14 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     plan_mode = False
     team_mode = False
     print(format_startup_status(api_key_loaded=True, plan_mode=plan_mode))
+    print(format_mcp_status(mcp_config.server_names()))
     print()
     print("💡 提示:")
     print("   - 输入你的问题或任务")
     print("   - 输入 '/plan' 进入计划模式，或 '/plan 任务' 直接规划任务")
     print("   - 输入 '/team' 后，下一条任务使用 Multi-Agent 团队模式")
     print("   - 输入 '/hitl [on|off]' 查看或切换人工审批")
+    print("   - 输入 '/mcp' 查看 MCP server 状态")
     print("   - 输入 '/memory' 查看记忆和 Token 状态")
     print("   - 输入 '/index [路径]' 索引代码库")
     print("   - 输入 '/search 查询' 检索代码库")
@@ -403,6 +492,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             continue
         if user_input.lower().startswith("/hitl"):
             print(handle_hitl_command(user_input[len("/hitl") :], hitl_handler))
+            print()
+            continue
+        if user_input.lower().startswith("/mcp"):
+            print(handle_mcp_command(user_input[len("/mcp") :], mcp_manager, tool_registry))
             print()
             continue
         if user_input.lower() == "/memory":
@@ -449,6 +542,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             response = agent.run(user_input)
             print(f"🤖 Agent: {response}\n")
 
+    mcp_manager.close()
     return 0
 
 

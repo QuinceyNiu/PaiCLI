@@ -142,6 +142,10 @@ class ToolRegistry:
     def register(self, tool: RegisteredTool) -> None:
         self.tools[tool.name] = tool
 
+    def unregister_by_prefix(self, prefix: str) -> None:
+        for name in [name for name in self.tools if name.startswith(prefix)]:
+            del self.tools[name]
+
     def set_project_path(self, project_path: str | Path) -> None:
         self.project_path = str(Path(project_path).expanduser().resolve())
 
