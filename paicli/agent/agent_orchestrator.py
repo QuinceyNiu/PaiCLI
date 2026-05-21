@@ -16,6 +16,7 @@ from paicli.agent.execution_step import ExecutionStep, StepStatus, StepType
 from paicli.agent.sub_agent import SubAgent
 from paicli.llm.glm_client import GLMClient
 from paicli.memory import MemoryManager
+from paicli.skill import SkillContextBuffer, SkillRegistry
 from paicli.tool.tool_registry import ToolRegistry
 
 
@@ -32,6 +33,7 @@ class AgentOrchestrator:
         memory_manager: Optional[MemoryManager] = None,
         base_dir: str | Path | None = None,
         on_event: Optional[Callable[[str], None]] = None,
+        skill_registry: SkillRegistry | None = None,
     ) -> None:
         self.llm_client = llm_client or GLMClient(api_key)
         self.tool_registry = tool_registry or ToolRegistry(base_dir=base_dir)
@@ -39,12 +41,41 @@ class AgentOrchestrator:
         if self.memory_manager.context_compressor.llm_client is None:
             self.memory_manager.context_compressor.llm_client = self.llm_client
         self.on_event = on_event
-        self.planner = SubAgent("planner", AgentRole.PLANNER, self.llm_client, self.tool_registry)
+        self.skill_registry = skill_registry
+        self.planner = SubAgent(
+            "planner",
+            AgentRole.PLANNER,
+            self.llm_client,
+            self.tool_registry,
+            skill_registry=self.skill_registry,
+            skill_context_buffer=SkillContextBuffer(),
+        )
         self.workers = [
-            SubAgent("worker-1", AgentRole.WORKER, self.llm_client, self.tool_registry),
-            SubAgent("worker-2", AgentRole.WORKER, self.llm_client, self.tool_registry),
+            SubAgent(
+                "worker-1",
+                AgentRole.WORKER,
+                self.llm_client,
+                self.tool_registry,
+                skill_registry=self.skill_registry,
+                skill_context_buffer=SkillContextBuffer(),
+            ),
+            SubAgent(
+                "worker-2",
+                AgentRole.WORKER,
+                self.llm_client,
+                self.tool_registry,
+                skill_registry=self.skill_registry,
+                skill_context_buffer=SkillContextBuffer(),
+            ),
         ]
-        self.reviewer = SubAgent("reviewer", AgentRole.REVIEWER, self.llm_client, self.tool_registry)
+        self.reviewer = SubAgent(
+            "reviewer",
+            AgentRole.REVIEWER,
+            self.llm_client,
+            self.tool_registry,
+            skill_registry=self.skill_registry,
+            skill_context_buffer=SkillContextBuffer(),
+        )
 
     def run(self, user_input: str) -> str:
         self.memory_manager.add_user_message(user_input)
@@ -295,6 +326,8 @@ class AgentOrchestrator:
             AgentRole.REVIEWER,
             self.llm_client,
             self.tool_registry,
+            skill_registry=self.skill_registry,
+            skill_context_buffer=SkillContextBuffer(),
         )
         try:
             self._call_run_step(step, all_steps, worker, emit=emit, reviewer=local_reviewer)

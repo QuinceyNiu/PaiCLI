@@ -9,6 +9,7 @@ from paicli.agent.browser_prompt import BROWSER_MCP_GUIDE
 from paicli.agent.agent_message import AgentMessage, AgentMessageType
 from paicli.agent.agent_role import AgentRole
 from paicli.llm.glm_client import ChatResponse, Message, ToolCall
+from paicli.skill import SkillContextBuffer, SkillRegistry, active_skill_context
 from paicli.tool.tool_registry import ToolInvocation, ToolRegistry
 
 
@@ -82,17 +83,29 @@ class SubAgent:
         llm_client: ChatClient,
         tool_registry: ToolRegistry,
         max_iterations: int = MAX_ITERATIONS,
+        skill_registry: SkillRegistry | None = None,
+        skill_context_buffer: SkillContextBuffer | None = None,
+        loaded_skill_names: set[str] | None = None,
     ) -> None:
         self.agent_id = agent_id
         self.role = role
         self.llm_client = llm_client
         self.tool_registry = tool_registry
         self.max_iterations = max_iterations
-        self.system_prompt = self._prompt_for_role(role)
+        self.skill_registry = skill_registry
+        self.skill_context_buffer = skill_context_buffer or SkillContextBuffer()
+        self.loaded_skill_names = loaded_skill_names if loaded_skill_names is not None else set()
+        if self.skill_registry is not None and self.should_use_tools():
+            for tool in self.skill_registry.tool_provider(
+                self.skill_context_buffer,
+                self.loaded_skill_names,
+            ).get_tools():
+                self.tool_registry.register(tool)
+        self.system_prompt = self._build_system_prompt(role)
         self.conversation_history: list[Message] = [Message.system(self.system_prompt)]
 
     def execute(self, message: AgentMessage) -> AgentMessage:
-        self.conversation_history.append(Message.user(message.content))
+        self.conversation_history.append(Message.user(self._user_message_with_skill_context(message.content)))
         for _ in range(self.max_iterations):
             try:
                 response = self.llm_client.chat(
@@ -111,6 +124,11 @@ class SubAgent:
                 tool_results = self._execute_tool_calls(assistant_message.tool_calls)
                 for tool_result in tool_results:
                     self.conversation_history.append(Message.tool(tool_result.id, tool_result.result))
+                skill_context = self.skill_context_buffer.drain()
+                if skill_context:
+                    self.conversation_history.append(
+                        Message.user(self._format_loaded_skill_user_message(skill_context, message.content))
+                    )
                 continue
 
             content = assistant_message.content or ""
@@ -131,6 +149,8 @@ class SubAgent:
         return self.execute(AgentMessage("orchestrator", AgentRole.REVIEWER, content, AgentMessageType.TASK))
 
     def clear_history(self) -> None:
+        self.skill_context_buffer.clear()
+        self.loaded_skill_names.clear()
         self.conversation_history = [Message.system(self.system_prompt)]
 
     def should_use_tools(self) -> bool:
@@ -141,7 +161,31 @@ class SubAgent:
             ToolInvocation(tool_call.id, tool_call.function.name, tool_call.function.arguments or "{}")
             for tool_call in tool_calls
         ]
+        if self.skill_registry is not None and any(invocation.name == "load_skill" for invocation in invocations):
+            with active_skill_context(self.skill_context_buffer, self.loaded_skill_names):
+                return [
+                    self.tool_registry.execute_tools([invocation])[0]
+                    for invocation in invocations
+                ]
         return self.tool_registry.execute_tools(invocations)
+
+    def _build_system_prompt(self, role: AgentRole) -> str:
+        prompt = self._prompt_for_role(role)
+        if self.skill_registry is None or not self.should_use_tools():
+            return prompt
+        index = self.skill_registry.format_index()
+        if not index:
+            return prompt
+        return f"{prompt}\n\n{index}"
+
+    def _user_message_with_skill_context(self, content: str) -> str:
+        skill_context = self.skill_context_buffer.drain()
+        if not skill_context:
+            return content
+        return self._format_loaded_skill_user_message(skill_context, content)
+
+    def _format_loaded_skill_user_message(self, skill_context: str, content: str) -> str:
+        return f"{skill_context}\n\n---\n用户输入：{content}"
 
     def _prompt_for_role(self, role: AgentRole) -> str:
         if role == AgentRole.PLANNER:

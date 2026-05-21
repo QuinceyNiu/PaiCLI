@@ -13,6 +13,7 @@ from paicli.memory import MemoryManager
 from paicli.plan.execution_plan import ExecutionPlan
 from paicli.plan.planner import Planner, PlanningError
 from paicli.plan.task import Task, TaskStatus, TaskType
+from paicli.skill import SkillContextBuffer, SkillRegistry
 from paicli.tool.tool_registry import ToolInvocation, ToolRegistry
 
 
@@ -44,11 +45,15 @@ class PlanExecuteAgent:
         base_dir: str | Path | None = None,
         on_plan_update: Optional[Callable[[str], None]] = None,
         memory_manager: Optional[MemoryManager] = None,
+        skill_registry: SkillRegistry | None = None,
+        skill_context_buffer: SkillContextBuffer | None = None,
     ) -> None:
         self.llm_client = llm_client or GLMClient(api_key)
         self.tool_registry = tool_registry or ToolRegistry(base_dir=base_dir)
         self.on_plan_update = on_plan_update
         self.memory_manager = memory_manager or MemoryManager()
+        self.skill_registry = skill_registry
+        self.skill_context_buffer = skill_context_buffer or SkillContextBuffer()
         if memory_manager is None and self.memory_manager.context_compressor.llm_client is None:
             self.memory_manager.context_compressor.llm_client = self.llm_client
         self.planner = planner or Planner(self.llm_client)
@@ -57,6 +62,8 @@ class PlanExecuteAgent:
             llm_client=self.llm_client,
             tool_registry=self.tool_registry,
             memory_manager=self.memory_manager,
+            skill_registry=self.skill_registry,
+            skill_context_buffer=self.skill_context_buffer,
         )
 
     def run(self, user_input: str) -> str:

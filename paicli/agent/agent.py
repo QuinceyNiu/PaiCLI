@@ -11,6 +11,7 @@ from typing import Any, Callable, Optional, Protocol
 from paicli.agent.browser_prompt import BROWSER_MCP_GUIDE
 from paicli.llm.glm_client import ChatResponse, GLMClient, Message, ToolCall
 from paicli.memory import MemoryManager
+from paicli.skill import SkillContextBuffer, SkillRegistry, active_skill_context
 from paicli.tool.tool_registry import ToolExecutionResult, ToolInvocation, ToolRegistry
 
 
@@ -71,6 +72,9 @@ class Agent:
         max_iterations: int = MAX_ITERATIONS,
         on_event: Optional[AgentEventHandler] = None,
         memory_manager: Optional[MemoryManager] = None,
+        skill_registry: Optional[SkillRegistry] = None,
+        skill_context_buffer: Optional[SkillContextBuffer] = None,
+        loaded_skill_names: Optional[set[str]] = None,
     ) -> None:
         self.llm_client = llm_client or GLMClient(api_key)
         self.tool_registry = tool_registry or ToolRegistry(base_dir=base_dir)
@@ -79,12 +83,23 @@ class Agent:
         self.memory_manager = memory_manager or MemoryManager()
         if self.memory_manager.context_compressor.llm_client is None:
             self.memory_manager.context_compressor.llm_client = self.llm_client
-        self.system_prompt = SYSTEM_PROMPT
-        self.conversation_history: list[Message] = [Message.system(SYSTEM_PROMPT)]
+        self.skill_registry = skill_registry
+        self.skill_context_buffer = skill_context_buffer or SkillContextBuffer()
+        self.loaded_skill_names = loaded_skill_names if loaded_skill_names is not None else set()
+        if self.skill_registry is not None:
+            for tool in self.skill_registry.tool_provider(
+                self.skill_context_buffer,
+                self.loaded_skill_names,
+            ).get_tools():
+                self.tool_registry.register(tool)
+        self.system_prompt = self._build_system_prompt()
+        self.conversation_history = [Message.system(self.system_prompt)]
 
     def clear_history(self) -> list[str]:
         facts = self.memory_manager.extract_and_save_facts()
         self.memory_manager.clear_short_term()
+        self.skill_context_buffer.clear()
+        self.loaded_skill_names.clear()
         self.conversation_history = [Message.system(self.system_prompt)]
         return facts
 
@@ -92,7 +107,7 @@ class Agent:
         self.memory_manager.add_user_message(user_input)
         memory_context = self.memory_manager.build_context_for_query(user_input, max_tokens=500)
         self._update_system_prompt_with_memory(memory_context)
-        self.conversation_history.append(Message.user(user_input))
+        self.conversation_history.append(Message.user(self._user_message_with_skill_context(user_input)))
 
         for iteration in range(self.max_iterations):
             self._emit(AgentEvent(type="thinking"))
@@ -125,6 +140,11 @@ class Agent:
                     )
                     self.conversation_history.append(Message.tool(tool_result.id, tool_result.result))
                     self.memory_manager.add_tool_result(tool_result.name, tool_result.result)
+                skill_context = self.skill_context_buffer.drain()
+                if skill_context:
+                    self.conversation_history.append(
+                        Message.user(self._format_loaded_skill_user_message(skill_context, user_input))
+                    )
                 continue
 
             content = message.content or ""
@@ -134,6 +154,18 @@ class Agent:
 
         return "达到最大迭代次数限制"
 
+    def _build_system_prompt(self) -> str:
+        if self.skill_registry is None:
+            return SYSTEM_PROMPT
+        skill_index = self.skill_registry.format_index()
+        if not skill_index:
+            return SYSTEM_PROMPT
+        return f"{SYSTEM_PROMPT}\n\n{skill_index}"
+
+    def refresh_skill_index(self) -> None:
+        self.system_prompt = self._build_system_prompt()
+        self.conversation_history[0] = Message.system(self.system_prompt)
+
     def _update_system_prompt_with_memory(self, memory_context: str) -> None:
         if not memory_context:
             self.conversation_history[0] = Message.system(self.system_prompt)
@@ -141,6 +173,15 @@ class Agent:
         self.conversation_history[0] = Message.system(
             f"{self.system_prompt}\n\n{memory_context}"
         )
+
+    def _user_message_with_skill_context(self, user_input: str) -> str:
+        skill_context = self.skill_context_buffer.drain()
+        if not skill_context:
+            return user_input
+        return self._format_loaded_skill_user_message(skill_context, user_input)
+
+    def _format_loaded_skill_user_message(self, skill_context: str, user_input: str) -> str:
+        return f"{skill_context}\n\n---\n用户输入：{user_input}"
 
     def _emit(self, event: AgentEvent) -> None:
         if self.on_event is not None:
@@ -181,6 +222,12 @@ class Agent:
                 len(invocations),
                 iteration,
             )
+        if self.skill_registry is not None and any(invocation.name == "load_skill" for invocation in invocations):
+            with active_skill_context(self.skill_context_buffer, self.loaded_skill_names):
+                return [
+                    self.tool_registry.execute_tools([invocation])[0]
+                    for invocation in invocations
+                ]
         return self.tool_registry.execute_tools(invocations)
 
     def _parse_tool_args(self, tool_call: ToolCall) -> dict[str, str]:

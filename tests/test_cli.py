@@ -22,6 +22,7 @@ from paicli.cli.main import (
     format_mcp_status,
     handle_team_interaction,
     handle_plan_interaction,
+    handle_skill_command,
     handle_hitl_command,
     index_codebase,
     load_api_key,
@@ -34,6 +35,7 @@ from paicli.mcp import McpConfig
 from paicli.plan.execution_plan import ExecutionPlan, PlanStatus
 from paicli.plan.task import Task, TaskStatus, TaskType
 from paicli.rag import CodeChunk, CodeRelation, SearchResult
+from paicli.skill import SkillRegistry
 
 
 class FakePlanAgent:
@@ -187,6 +189,45 @@ class CliTest(unittest.TestCase):
         self.assertEqual(handle_browser_command("status", session), "browser status")
         self.assertEqual(handle_browser_command("connect", session), "connected")
         self.assertEqual(handle_browser_command("disconnect", session), "disconnected")
+
+    def test_handle_skill_command_lists_shows_toggles_and_reloads(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill_file = root / "builtin" / "web-access" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True)
+            skill_file.write_text(
+                """---
+name: web-access
+description: 内置联网操作指引
+version: "1.0.0"
+---
+
+body
+""",
+                encoding="utf-8",
+            )
+            registry = SkillRegistry(
+                builtin_dir=root / "builtin",
+                user_dir=root / "user",
+                project_dir=root / "project",
+                state_path=root / "skills.json",
+            )
+            registry.reload()
+
+            listing = handle_skill_command("list", registry)
+            shown = handle_skill_command("show web-access", registry)
+            disabled = handle_skill_command("off web-access", registry)
+            disabled_listing = handle_skill_command("list", registry)
+            enabled = handle_skill_command("on web-access", registry)
+            reloaded = handle_skill_command("reload", registry)
+
+            self.assertIn("● web-access", listing)
+            self.assertIn("builtin", listing)
+            self.assertIn("# web-access", shown)
+            self.assertIn("已禁用", disabled)
+            self.assertIn("○ web-access", disabled_listing)
+            self.assertIn("已启用", enabled)
+            self.assertIn("Skills 重新加载", reloaded)
 
     def test_load_api_key_prefers_env_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

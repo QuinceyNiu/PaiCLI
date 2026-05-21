@@ -26,6 +26,7 @@ from paicli.mcp import (
 )
 from paicli.plan.execution_plan import ExecutionPlan
 from paicli.rag import CodeIndex, CodeRetriever, EmbeddingClient, SearchResultFormatter, VectorStore
+from paicli.skill import SkillRegistry
 from paicli.tool.hitl_tool_registry import HitlToolRegistry
 from paicli.tool.hitl_tool_registry import BrowserGuard
 from paicli.tool.tool_registry import ToolRegistry
@@ -258,6 +259,39 @@ def handle_browser_command(argument: str, session: BrowserSession) -> str:
     return "⚠️ 用法: /browser [status|connect|disconnect]"
 
 
+def handle_skill_command(argument: str, registry: SkillRegistry) -> str:
+    parts = argument.strip().split()
+    if not parts:
+        return "⚠️ 用法: /skill [list|show|on|off|reload] <name>"
+    command = parts[0].lower()
+    name = parts[1] if len(parts) > 1 else ""
+    if command == "list":
+        return registry.format_list()
+    if command == "show":
+        if not name:
+            return "⚠️ 用法: /skill show <name>"
+        skill = registry.get(name)
+        if skill is None:
+            return f"未找到 Skill: {name}"
+        return f"# {skill.name}\n来源: {skill.source.value}\n路径: {skill.path}\n\n{skill.document}"
+    if command == "off":
+        if not name:
+            return "⚠️ 用法: /skill off <name>"
+        if not registry.disable(name):
+            return f"未找到 Skill: {name}"
+        return f"已禁用 Skill: {name}"
+    if command == "on":
+        if not name:
+            return "⚠️ 用法: /skill on <name>"
+        if not registry.enable(name):
+            return f"未找到 Skill: {name}"
+        return f"已启用 Skill: {name}"
+    if command == "reload":
+        registry.reload()
+        return "Skills 重新加载完成。\n" + registry.format_summary()
+    return "⚠️ 用法: /skill [list|show|on|off|reload] <name>"
+
+
 def refresh_mcp_tools(registry: ToolRegistry, manager: McpServerManager) -> None:
     if not manager.runtimes():
         return
@@ -418,6 +452,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     memory_manager = MemoryManager()
     vector_store: VectorStore | None = None
     llm_client = GLMClient(api_key)
+    skill_registry = SkillRegistry(project_dir=Path.cwd() / ".paicli" / "skills")
+    skill_registry.reload()
+    print(skill_registry.format_summary())
     hitl_handler = TerminalHitlHandler(False)
     mcp_bootstrap_message = ensure_default_mcp_config(DEFAULT_MCP_CONFIG_PATH)
     if mcp_bootstrap_message:
@@ -444,6 +481,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         tool_registry=tool_registry,
         on_event=handle_agent_event,
         memory_manager=memory_manager,
+        skill_registry=skill_registry,
     )
     plan_agent = PlanExecuteAgent(
         api_key,
@@ -451,6 +489,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         tool_registry=tool_registry,
         on_plan_update=print_plan_update,
         memory_manager=memory_manager,
+        skill_registry=skill_registry,
     )
     team_agent = AgentOrchestrator(
         api_key,
@@ -458,6 +497,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
         tool_registry=tool_registry,
         memory_manager=memory_manager,
         on_event=lambda message: print(message),
+        skill_registry=skill_registry,
     )
     plan_mode = False
     team_mode = False
@@ -471,6 +511,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     print("   - 输入 '/hitl [on|off]' 查看或切换人工审批")
     print("   - 输入 '/mcp' 查看 MCP server 状态")
     print("   - 输入 '/browser status' 查看浏览器模式，'/browser disconnect' 切回 isolated")
+    print("   - 输入 '/skill list' 查看 Skill，'/skill reload' 热加载 Skill")
     print("   - 输入 '/memory' 查看记忆和 Token 状态")
     print("   - 输入 '/index [路径]' 索引代码库")
     print("   - 输入 '/search 查询' 检索代码库")
@@ -524,6 +565,13 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             refresh_mcp_tools(tool_registry, mcp_manager)
             print()
             continue
+        if user_input.lower().startswith("/skill"):
+            print(handle_skill_command(user_input[len("/skill") :], skill_registry))
+            agent.refresh_skill_index()
+            if hasattr(plan_agent.react_agent, "refresh_skill_index"):
+                plan_agent.react_agent.refresh_skill_index()
+            print()
+            continue
         if user_input.lower() == "/memory":
             print(format_memory_report(memory_manager))
             print()
@@ -554,6 +602,9 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             continue
         if user_input.lower() in {"clear", "/clear"}:
             print(clear_agent_history(agent))
+            react_agent = getattr(plan_agent, "react_agent", None)
+            if hasattr(react_agent, "clear_history"):
+                react_agent.clear_history()
             hitl_handler.clear_approved_all()
             print()
             continue

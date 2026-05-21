@@ -6,7 +6,8 @@ from pathlib import Path
 from paicli.agent.agent import Agent
 from paicli.llm.glm_client import ChatResponse, FunctionCall, Message, ToolCall, Usage
 from paicli.memory import LongTermMemory, MemoryManager, MemoryType
-from paicli.tool.tool_registry import ToolExecutionResult
+from paicli.skill import SkillContextBuffer, SkillRegistry
+from paicli.tool.tool_registry import ToolExecutionResult, ToolRegistry
 
 
 class FakeLLMClient:
@@ -224,6 +225,136 @@ class AgentTest(unittest.TestCase):
         self.assertEqual(first_call_messages[1].role, "user")
         self.assertEqual(first_call_messages[1].content, "按 JDK 生成 Java 项目")
         self.assertEqual(memory_manager.context_limits, [500])
+
+    def test_run_injects_loaded_skill_body_into_next_user_message_once(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill_file = root / "builtin" / "web-access" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True)
+            skill_file.write_text(
+                """---
+name: web-access
+description: 联网操作指引
+---
+
+# Web Access
+先 web_fetch，再浏览器。
+""",
+                encoding="utf-8",
+            )
+            registry = SkillRegistry(
+                builtin_dir=root / "builtin",
+                user_dir=root / "user",
+                project_dir=root / "project",
+                state_path=root / "skills.json",
+            )
+            registry.reload()
+            skill_buffer = SkillContextBuffer()
+            llm = FakeLLMClient(
+                [
+                    ChatResponse(
+                        message=Message.assistant(
+                            content="",
+                            tool_calls=[
+                                ToolCall(
+                                    id="load",
+                                    function=FunctionCall(
+                                        name="load_skill",
+                                        arguments=json.dumps({"name": "web-access"}),
+                                    ),
+                                )
+                            ],
+                        ),
+                        finish_reason="tool_calls",
+                    ),
+                    ChatResponse(message=Message.assistant("按 web-access 执行")),
+                    ChatResponse(message=Message.assistant("第二轮继续按经验执行")),
+                ]
+            )
+            agent = Agent(
+                api_key="test-key",
+                llm_client=llm,
+                base_dir=tmp,
+                skill_registry=registry,
+                skill_context_buffer=skill_buffer,
+            )
+
+            first = agent.run("看这个 URL")
+            second = agent.run("再看另一个 URL")
+
+            self.assertEqual(first, "按 web-access 执行")
+            self.assertEqual(second, "第二轮继续按经验执行")
+            second_llm_call_messages = llm.calls[1][0]
+            self.assertIn("## 已加载 Skill：web-access", second_llm_call_messages[-1].content)
+            self.assertIn("先 web_fetch，再浏览器。", second_llm_call_messages[-1].content)
+            third_llm_call_messages = llm.calls[2][0]
+            self.assertEqual(third_llm_call_messages[-1].content, "再看另一个 URL")
+
+    def test_shared_tool_registry_uses_current_agents_skill_buffer(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            skill_file = root / "builtin" / "web-access" / "SKILL.md"
+            skill_file.parent.mkdir(parents=True)
+            skill_file.write_text(
+                """---
+name: web-access
+description: 联网操作指引
+---
+
+agent-specific body
+""",
+                encoding="utf-8",
+            )
+            registry = SkillRegistry(
+                builtin_dir=root / "builtin",
+                user_dir=root / "user",
+                project_dir=root / "project",
+                state_path=root / "skills.json",
+            )
+            registry.reload()
+            tool_registry = ToolRegistry(base_dir=tmp)
+            buffer_one = SkillContextBuffer()
+            buffer_two = SkillContextBuffer()
+            llm_one = FakeLLMClient(
+                [
+                    ChatResponse(
+                        message=Message.assistant(
+                            "",
+                            [
+                                ToolCall(
+                                    id="load",
+                                    function=FunctionCall(
+                                        name="load_skill",
+                                        arguments=json.dumps({"name": "web-access"}),
+                                    ),
+                                )
+                            ],
+                        ),
+                        finish_reason="tool_calls",
+                    ),
+                    ChatResponse(message=Message.assistant("agent one done")),
+                ]
+            )
+            llm_two = FakeLLMClient([ChatResponse(message=Message.assistant("agent two idle"))])
+            agent_one = Agent(
+                api_key="test-key",
+                llm_client=llm_one,
+                tool_registry=tool_registry,
+                skill_registry=registry,
+                skill_context_buffer=buffer_one,
+            )
+            Agent(
+                api_key="test-key",
+                llm_client=llm_two,
+                tool_registry=tool_registry,
+                skill_registry=registry,
+                skill_context_buffer=buffer_two,
+            )
+
+            agent_one.run("加载 skill")
+
+            self.assertIn("agent-specific body", llm_one.calls[1][0][-1].content)
+            self.assertEqual(buffer_two.drain(), "")
 
     def test_clear_history_extracts_facts_then_clears_short_term_memory(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
