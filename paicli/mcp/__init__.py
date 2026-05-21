@@ -1,6 +1,7 @@
 """MCP client support for PaiCli."""
 
 from paicli.mcp.client import McpClient, McpHttpClient, McpStdioClient, McpTool
+from paicli.mcp.browser_session import BrowserMode, BrowserSession
 from paicli.mcp.config import (
     DEFAULT_CHROME_DEVTOOLS_SERVER,
     DEFAULT_MCP_CONFIG_PATH,
@@ -20,6 +21,8 @@ __all__ = [
     "DEFAULT_MCP_CONFIG_PATH",
     "DEFAULT_MCP_TEMPLATE",
     "PROJECT_MCP_CONFIG_PATH",
+    "BrowserMode",
+    "BrowserSession",
     "McpClient",
     "McpConfig",
     "McpHttpClient",

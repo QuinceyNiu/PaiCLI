@@ -134,6 +134,25 @@ class McpServerManager:
             runtime.error = str(exc)
             runtime.tools = []
 
+    def runtime(self, name: str) -> McpServerRuntime | None:
+        return self._runtimes.get(name)
+
+    def restart_with_args(self, name: str, new_args: list[str]) -> str:
+        runtime = self._runtimes.get(name)
+        if runtime is None:
+            return f"❌ 未找到 MCP server: {name}"
+        runtime.config = McpServerConfig(
+            name=runtime.config.name,
+            transport=runtime.config.transport,
+            command=runtime.config.command,
+            args=list(new_args),
+            env=runtime.config.env,
+            url=runtime.config.url,
+            headers=runtime.config.headers,
+            enabled=runtime.config.enabled,
+        )
+        return self.restart(name)
+
     def restart(self, name: str) -> str:
         runtime = self._runtimes.get(name)
         if runtime is None:

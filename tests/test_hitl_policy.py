@@ -1,6 +1,7 @@
 import unittest
+from io import StringIO
 
-from paicli.hitl import ApprovalPolicy
+from paicli.hitl import ApprovalPolicy, ApprovalRequest, TerminalHitlHandler
 
 
 class ApprovalPolicyTest(unittest.TestCase):
@@ -24,6 +25,26 @@ class ApprovalPolicyTest(unittest.TestCase):
         self.assertIn("覆盖文件", ApprovalPolicy.get_risk_description("write_file"))
         self.assertIn("创建新目录和文件", ApprovalPolicy.get_risk_description("create_project"))
         self.assertIn("只读", ApprovalPolicy.get_risk_description("read_file"))
+
+    def test_mcp_approve_all_applies_to_server_and_can_be_cleared_by_server(self) -> None:
+        handler = TerminalHitlHandler(
+            True,
+            input_stream=StringIO("a\ny\n"),
+            output=StringIO(),
+        )
+
+        first = handler.request_approval(
+            ApprovalRequest.of("mcp__chrome_devtools__new_page", "{}")
+        )
+        second = handler.request_approval(
+            ApprovalRequest.of("mcp__chrome_devtools__take_snapshot", "{}")
+        )
+        handler.clear_approved_all_for_server("chrome-devtools")
+        third = handler.request_approval(ApprovalRequest.of("mcp__chrome_devtools__take_snapshot", "{}"))
+
+        self.assertEqual(first.decision.value, "APPROVED_ALL")
+        self.assertEqual(second.decision.value, "APPROVED_ALL")
+        self.assertEqual(third.decision.value, "APPROVED")
 
 
 if __name__ == "__main__":

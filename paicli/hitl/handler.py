@@ -47,10 +47,21 @@ class TerminalHitlHandler:
         with self._state_lock:
             self._approved_all_tools.clear()
 
+    def clear_approved_all_for_server(self, server_name: str) -> None:
+        normalized = server_name.replace("-", "_")
+        prefix = f"mcp__{normalized}__"
+        with self._state_lock:
+            self._approved_all_tools = {
+                tool for tool in self._approved_all_tools if not tool.startswith(prefix)
+            }
+
     def request_approval(self, request: ApprovalRequest) -> ApprovalResult:
         with self._approval_lock:
             with self._state_lock:
-                approved_all = request.tool_name in self._approved_all_tools
+                approved_all = (
+                    request.tool_name in self._approved_all_tools
+                    or _mcp_server_approval_key(request.tool_name) in self._approved_all_tools
+                )
             if approved_all:
                 self._println(f"  [HITL] {request.tool_name} 已在本次会话中全部放行，自动通过")
                 return ApprovalResult.approve_all()
@@ -62,7 +73,10 @@ class TerminalHitlHandler:
 
     def _prompt_until_decision(self, request: ApprovalRequest) -> ApprovalResult:
         for _ in range(5):
-            self._println("请选择操作：[y/Enter] 批准  [a] 全部放行  [n] 拒绝  [s] 跳过  [m] 修改参数")
+            if request.allow_approve_all:
+                self._println("请选择操作：[y/Enter] 批准  [a] 全部放行  [n] 拒绝  [s] 跳过  [m] 修改参数")
+            else:
+                self._println("请选择操作：[y/Enter] 批准  [n] 拒绝  [s] 跳过  [m] 修改参数")
             self._output.write("> ")
             self._output.flush()
 
@@ -72,9 +86,11 @@ class TerminalHitlHandler:
             normalized = line.strip().lower()
             if normalized in {"", "y"}:
                 return ApprovalResult.approve()
-            if normalized == "a":
+            if normalized == "a" and request.allow_approve_all:
                 with self._state_lock:
-                    self._approved_all_tools.add(request.tool_name)
+                    self._approved_all_tools.add(
+                        _mcp_server_approval_key(request.tool_name) or request.tool_name
+                    )
                 return ApprovalResult.approve_all()
             if normalized == "n":
                 reason = self._read_extra_line("请输入拒绝原因（可留空）：")
@@ -84,7 +100,8 @@ class TerminalHitlHandler:
             if normalized == "m":
                 modified = self._read_extra_line("请输入修改后的 JSON 参数：")
                 return ApprovalResult.modify(modified)
-            self._println("  ❓ 无法识别的选项，请输入 y/a/n/s/m 之一")
+            choices = "y/a/n/s/m" if request.allow_approve_all else "y/n/s/m"
+            self._println(f"  ❓ 无法识别的选项，请输入 {choices} 之一")
         return ApprovalResult.reject("连续多次无效输入")
 
     def _read_extra_line(self, prompt: str) -> str:
@@ -95,3 +112,10 @@ class TerminalHitlHandler:
     def _println(self, text: str = "") -> None:
         print(text, file=self._output)
         self._output.flush()
+
+
+def _mcp_server_approval_key(tool_name: str) -> str:
+    parts = (tool_name or "").split("__")
+    if len(parts) >= 3 and parts[0] == "mcp":
+        return f"mcp__{parts[1]}__*"
+    return ""

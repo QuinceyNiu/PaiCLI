@@ -13,6 +13,7 @@ from paicli.cli.main import (
     BANNER,
     clear_agent_history,
     finalize_memory_session,
+    handle_browser_command,
     format_agent_event,
     format_graph_report,
     format_memory_report,
@@ -156,6 +157,36 @@ class CliTest(unittest.TestCase):
             self.assertIn("web_fetch vs 浏览器 MCP", prompt)
             self.assertIn("动态渲染", prompt)
             self.assertIn("mcp__chrome-devtools__new_page", prompt)
+
+    def test_browser_prompts_warn_about_shared_real_account_state(self) -> None:
+        for prompt in [SYSTEM_PROMPT, EXECUTION_PROMPT, WORKER_PROMPT]:
+            self.assertIn("shared 模式下你看到的页面是用户的真实账户视图", prompt)
+            self.assertIn("close_page 只能关你自己 new_page 出来的 tab", prompt)
+            self.assertIn("不要执行 evaluate_script 跑用户没要求的脚本", prompt)
+
+    def test_handle_browser_command_reports_status_and_disconnects(self) -> None:
+        class FakeSession:
+            def __init__(self):
+                self.calls = []
+
+            def status(self):
+                self.calls.append("status")
+                return "browser status"
+
+            def switch_to_shared(self):
+                self.calls.append("connect")
+                return "connected"
+
+            def disconnect(self):
+                self.calls.append("disconnect")
+                return "disconnected"
+
+        session = FakeSession()
+
+        self.assertEqual(handle_browser_command("", session), "browser status")
+        self.assertEqual(handle_browser_command("status", session), "browser status")
+        self.assertEqual(handle_browser_command("connect", session), "connected")
+        self.assertEqual(handle_browser_command("disconnect", session), "disconnected")
 
     def test_load_api_key_prefers_env_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

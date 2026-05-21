@@ -15,4 +15,15 @@ BROWSER_MCP_GUIDE = """
 3. 阅读正文优先用 mcp__chrome-devtools__take_snapshot 获取 DOM/Accessibility Tree 文本。
 4. 需要视觉证据时用 mcp__chrome-devtools__take_screenshot。
 5. 调试页面问题时可用 list_console_messages、网络相关工具或 evaluate_script。
+
+浏览器登录态：
+- 默认 isolated 模式：临时 user-data-dir，无 cookie / 登录态。
+- shared 模式会复用用户正在使用的调试 Chrome。
+- shared 模式下你看到的页面是用户的真实账户视图。
+- 公开页面优先使用 isolated；如果页面提示登录、权限不足或 SSO，再切换 shared 并重试。
+- 不要做用户没明确要求的写入：不要点关注/取消关注/删除/退出登录/修改设置等按钮。
+- 不要在表单里填用户没给你的数据。
+- 不要执行 evaluate_script 跑用户没要求的脚本。
+- close_page 只能关你自己 new_page 出来的 tab。
+- 如果不确定某个操作是否会影响用户账户数据，先问用户确认。
 """.rstrip()

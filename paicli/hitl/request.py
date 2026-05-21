@@ -22,6 +22,7 @@ class ApprovalRequest:
     risk_description: str
     suggestion: str | None = None
     caller_context: str | None = None
+    allow_approve_all: bool = True
 
     @classmethod
     def of(
@@ -30,6 +31,7 @@ class ApprovalRequest:
         arguments: str,
         suggestion: str | None = None,
         caller_context: str | None = None,
+        allow_approve_all: bool = True,
     ) -> "ApprovalRequest":
         return cls(
             tool_name=tool_name,
@@ -38,6 +40,7 @@ class ApprovalRequest:
             risk_description=ApprovalPolicy.get_risk_description(tool_name),
             suggestion=suggestion,
             caller_context=caller_context,
+            allow_approve_all=allow_approve_all,
         )
 
     def to_display_text(self) -> str:

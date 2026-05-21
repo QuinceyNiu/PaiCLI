@@ -18,6 +18,7 @@ from paicli.memory import MemoryManager
 from paicli.mcp import (
     DEFAULT_MCP_CONFIG_PATH,
     PROJECT_MCP_CONFIG_PATH,
+    BrowserSession,
     McpConfig,
     McpServerManager,
     McpToolProvider,
@@ -26,6 +27,7 @@ from paicli.mcp import (
 from paicli.plan.execution_plan import ExecutionPlan
 from paicli.rag import CodeIndex, CodeRetriever, EmbeddingClient, SearchResultFormatter, VectorStore
 from paicli.tool.hitl_tool_registry import HitlToolRegistry
+from paicli.tool.hitl_tool_registry import BrowserGuard
 from paicli.tool.tool_registry import ToolRegistry
 
 
@@ -245,6 +247,17 @@ def handle_mcp_command(argument: str, manager: McpServerManager, registry: ToolR
     return "⚠️ 用法: /mcp [restart|logs|disable|enable] <name>"
 
 
+def handle_browser_command(argument: str, session: BrowserSession) -> str:
+    command = argument.strip().lower()
+    if command in {"", "status"}:
+        return session.status()
+    if command in {"connect", "shared"}:
+        return session.switch_to_shared()
+    if command in {"disconnect", "isolated"}:
+        return session.disconnect()
+    return "⚠️ 用法: /browser [status|connect|disconnect]"
+
+
 def refresh_mcp_tools(registry: ToolRegistry, manager: McpServerManager) -> None:
     if not manager.runtimes():
         return
@@ -416,7 +429,10 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     )
     mcp_manager = McpServerManager(mcp_config)
     mcp_manager.start_all(progress_callback=print)
-    tool_registry = HitlToolRegistry(hitl_handler)
+    browser_session = BrowserSession(mcp_manager, hitl_handler=hitl_handler)
+    browser_guard = BrowserGuard(browser_session)
+    tool_registry = HitlToolRegistry(hitl_handler, browser_guard=browser_guard)
+    tool_registry.on_browser_restart = lambda: refresh_mcp_tools(tool_registry, mcp_manager)
     refresh_mcp_tools(tool_registry, mcp_manager)
 
     def handle_agent_event(event: AgentEvent) -> None:
@@ -454,6 +470,7 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     print("   - 输入 '/team' 后，下一条任务使用 Multi-Agent 团队模式")
     print("   - 输入 '/hitl [on|off]' 查看或切换人工审批")
     print("   - 输入 '/mcp' 查看 MCP server 状态")
+    print("   - 输入 '/browser status' 查看浏览器模式，'/browser disconnect' 切回 isolated")
     print("   - 输入 '/memory' 查看记忆和 Token 状态")
     print("   - 输入 '/index [路径]' 索引代码库")
     print("   - 输入 '/search 查询' 检索代码库")
@@ -500,6 +517,11 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
             continue
         if user_input.lower().startswith("/mcp"):
             print(handle_mcp_command(user_input[len("/mcp") :], mcp_manager, tool_registry))
+            print()
+            continue
+        if user_input.lower().startswith("/browser"):
+            print(handle_browser_command(user_input[len("/browser") :], browser_session))
+            refresh_mcp_tools(tool_registry, mcp_manager)
             print()
             continue
         if user_input.lower() == "/memory":
