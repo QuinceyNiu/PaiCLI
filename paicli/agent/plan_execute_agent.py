@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Callable, Optional, Protocol
 
+from paicli.agent.browser_prompt import BROWSER_MCP_GUIDE
 from paicli.agent.agent import Agent
 from paicli.llm.glm_client import GLMClient
 from paicli.memory import MemoryManager
@@ -23,6 +24,11 @@ class PlannerLike(Protocol):
 class ReactAgentLike(Protocol):
     def run(self, user_input: str) -> str:
         """Run a simple task with the ReAct agent."""
+
+
+EXECUTION_PROMPT = """
+你是 PaiCLI 的计划执行助手。执行计划中的网页阅读、页面调试或浏览器交互任务时，请按下面的策略选择工具。
+""".strip() + BROWSER_MCP_GUIDE
 
 
 class PlanExecuteAgent:

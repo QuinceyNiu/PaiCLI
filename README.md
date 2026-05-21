@@ -88,6 +88,21 @@ PaiCli reads MCP server configuration from two locations:
 
 Both files use a Claude Code-compatible `mcpServers` object. User-level config is loaded first, then project-level config overrides servers with the same name.
 
+When `~/.paicli/mcp.json` does not exist, PaiCli creates a default template with Google Chrome DevTools MCP enabled:
+
+```json
+{
+  "mcpServers": {
+    "chrome-devtools": {
+      "command": "npx",
+      "args": ["-y", "chrome-devtools-mcp@latest", "--isolated=true"]
+    }
+  }
+}
+```
+
+`--isolated=true` starts Chrome with a temporary user-data directory, so browser actions do not touch your daily Chrome profile, cookies, history, or bookmarks. If you already have an MCP config and want browser control, add the `chrome-devtools` entry manually. You can disable it for the current session with `/mcp disable chrome-devtools`.
+
 ```json
 {
   "mcpServers": {

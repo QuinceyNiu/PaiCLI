@@ -11,6 +11,15 @@ from typing import Any, Mapping
 
 DEFAULT_MCP_CONFIG_PATH = Path.home() / ".paicli" / "mcp.json"
 PROJECT_MCP_CONFIG_PATH = Path(".paicli") / "mcp.json"
+DEFAULT_CHROME_DEVTOOLS_SERVER = {
+    "command": "npx",
+    "args": ["-y", "chrome-devtools-mcp@latest", "--isolated=true"],
+}
+DEFAULT_MCP_TEMPLATE = {
+    "mcpServers": {
+        "chrome-devtools": DEFAULT_CHROME_DEVTOOLS_SERVER,
+    }
+}
 
 
 @dataclass(frozen=True)
@@ -97,6 +106,29 @@ class McpConfig:
 
     def server_names(self) -> list[str]:
         return [server.name for server in self.servers]
+
+
+def ensure_default_mcp_config(path: str | Path = DEFAULT_MCP_CONFIG_PATH) -> str:
+    config_path = Path(path).expanduser()
+    if not config_path.exists():
+        try:
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            config_path.write_text(
+                json.dumps(DEFAULT_MCP_TEMPLATE, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            return f"🔌 已创建默认 MCP 配置: {config_path}"
+        except Exception as exc:
+            return f"🔌 默认 MCP 配置创建失败: {exc}"
+
+    try:
+        data = json.loads(config_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        return f"🔌 MCP 配置读取失败: {exc}"
+    servers = data.get("mcpServers") if isinstance(data, Mapping) else None
+    if isinstance(servers, Mapping) and "chrome-devtools" not in servers:
+        return "🔌 MCP 配置缺少 chrome-devtools；可手动添加 Google 官方 Chrome DevTools MCP。"
+    return ""
 
 
 def _parse_server(name: str, value: Any, project_dir: Path) -> McpServerConfig:

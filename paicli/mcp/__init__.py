@@ -1,14 +1,24 @@
 """MCP client support for PaiCli."""
 
 from paicli.mcp.client import McpClient, McpHttpClient, McpStdioClient, McpTool
-from paicli.mcp.config import DEFAULT_MCP_CONFIG_PATH, PROJECT_MCP_CONFIG_PATH, McpConfig, McpServerConfig
+from paicli.mcp.config import (
+    DEFAULT_CHROME_DEVTOOLS_SERVER,
+    DEFAULT_MCP_CONFIG_PATH,
+    DEFAULT_MCP_TEMPLATE,
+    PROJECT_MCP_CONFIG_PATH,
+    McpConfig,
+    McpServerConfig,
+    ensure_default_mcp_config,
+)
 from paicli.mcp.manager import McpServerManager, McpServerRuntime
 from paicli.mcp.schema import McpSchemaSanitizer
 from paicli.mcp.tool_provider import McpToolProvider, normalize_tool_name
 from paicli.mcp.transport import McpTransport, StdioTransport, StreamableHttpTransport
 
 __all__ = [
+    "DEFAULT_CHROME_DEVTOOLS_SERVER",
     "DEFAULT_MCP_CONFIG_PATH",
+    "DEFAULT_MCP_TEMPLATE",
     "PROJECT_MCP_CONFIG_PATH",
     "McpClient",
     "McpConfig",
@@ -23,5 +33,6 @@ __all__ = [
     "McpTransport",
     "StdioTransport",
     "StreamableHttpTransport",
+    "ensure_default_mcp_config",
     "normalize_tool_name",
 ]

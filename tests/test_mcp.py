@@ -6,10 +6,13 @@ from pathlib import Path
 import httpx
 
 from paicli.mcp import (
+    DEFAULT_CHROME_DEVTOOLS_SERVER,
+    DEFAULT_MCP_TEMPLATE,
     McpConfig,
     McpHttpClient,
     McpServerConfig,
     McpToolProvider,
+    ensure_default_mcp_config,
     normalize_tool_name,
 )
 
@@ -74,6 +77,28 @@ class McpConfigTest(unittest.TestCase):
         config = McpConfig.load("/missing/mcp.json", project_dir=".")
 
         self.assertEqual(config.servers, [])
+
+    def test_ensure_default_config_creates_chrome_devtools_template(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / ".paicli" / "mcp.json"
+
+            message = ensure_default_mcp_config(config_path)
+
+            data = json.loads(config_path.read_text(encoding="utf-8"))
+            server = data["mcpServers"]["chrome-devtools"]
+            self.assertEqual(server, DEFAULT_CHROME_DEVTOOLS_SERVER)
+            self.assertIn("已创建默认 MCP 配置", message)
+
+    def test_ensure_default_config_warns_without_overwriting_existing_config(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            config_path = Path(tmp) / "mcp.json"
+            original = {"mcpServers": {"zread": {"url": "https://example.com/mcp"}}}
+            config_path.write_text(json.dumps(original), encoding="utf-8")
+
+            message = ensure_default_mcp_config(config_path)
+
+            self.assertEqual(json.loads(config_path.read_text(encoding="utf-8")), original)
+            self.assertIn("缺少 chrome-devtools", message)
 
 
 class McpHttpClientTest(unittest.TestCase):

@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Optional, Protocol
 
+from paicli.agent.browser_prompt import BROWSER_MCP_GUIDE
 from paicli.llm.glm_client import ChatResponse, GLMClient, Message, ToolCall
 from paicli.memory import MemoryManager
 from paicli.tool.tool_registry import ToolExecutionResult, ToolInvocation, ToolRegistry
@@ -38,7 +39,7 @@ SYSTEM_PROMPT = """
 同一轮返回多个工具调用时，系统会并行执行这些工具；如果工具之间有依赖关系，请分多轮调用。
 
 请用中文回复用户。
-""".strip()
+""".strip() + BROWSER_MCP_GUIDE
 
 
 @dataclass(frozen=True)

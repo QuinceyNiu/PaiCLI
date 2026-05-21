@@ -7,6 +7,8 @@ from unittest.mock import patch
 
 from paicli.agent.agent import AgentEvent
 from paicli.agent.agent import SYSTEM_PROMPT
+from paicli.agent.plan_execute_agent import EXECUTION_PROMPT
+from paicli.agent.sub_agent import WORKER_PROMPT
 from paicli.cli.main import (
     BANNER,
     clear_agent_history,
@@ -27,6 +29,7 @@ from paicli.cli.main import (
     save_memory_fact,
 )
 from paicli.memory import ConversationMemory, LongTermMemory, MemoryManager, TokenBudget
+from paicli.mcp import McpConfig
 from paicli.plan.execution_plan import ExecutionPlan, PlanStatus
 from paicli.plan.task import Task, TaskStatus, TaskType
 from paicli.rag import CodeChunk, CodeRelation, SearchResult
@@ -108,6 +111,22 @@ class FakeHitlHandler:
 
 
 class CliTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._mcp_bootstrap_patcher = patch(
+            "paicli.cli.main.ensure_default_mcp_config",
+            return_value="",
+        )
+        self._mcp_config_patcher = patch(
+            "paicli.cli.main.McpConfig.load_merged",
+            return_value=McpConfig([]),
+        )
+        self._mcp_bootstrap_patcher.start()
+        self._mcp_config_patcher.start()
+
+    def tearDown(self) -> None:
+        self._mcp_config_patcher.stop()
+        self._mcp_bootstrap_patcher.stop()
+
     def test_banner_mentions_memory_enhanced_version(self) -> None:
         self.assertIn("Memory-Enhanced Agent CLI v3.0.0", BANNER)
 
@@ -128,6 +147,15 @@ class CliTest(unittest.TestCase):
         self.assertIn("web_search", SYSTEM_PROMPT)
         self.assertIn("web_fetch", SYSTEM_PROMPT)
         self.assertIn("MCP", SYSTEM_PROMPT)
+        self.assertIn("web_fetch vs 浏览器 MCP", SYSTEM_PROMPT)
+        self.assertIn("微信生态", SYSTEM_PROMPT)
+        self.assertIn("mcp__chrome-devtools__take_snapshot", SYSTEM_PROMPT)
+
+    def test_execution_prompts_include_browser_mcp_decision_guide(self) -> None:
+        for prompt in [EXECUTION_PROMPT, WORKER_PROMPT]:
+            self.assertIn("web_fetch vs 浏览器 MCP", prompt)
+            self.assertIn("动态渲染", prompt)
+            self.assertIn("mcp__chrome-devtools__new_page", prompt)
 
     def test_load_api_key_prefers_env_file(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:

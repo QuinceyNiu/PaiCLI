@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import time
 from dataclasses import dataclass, field
+from typing import Callable
 
 from paicli.mcp.client import McpClient, McpTool, create_mcp_client
 from paicli.mcp.config import McpConfig, McpServerConfig
@@ -46,18 +47,67 @@ class McpServerManager:
             server.name: McpServerRuntime(server) for server in config.servers
         }
 
-    def start_all(self) -> None:
+    def start_all(
+        self,
+        progress_callback: Callable[[str], None] | None = None,
+        progress_interval_seconds: float = 5.0,
+    ) -> None:
         targets = [
             runtime for runtime in self._runtimes.values()
             if runtime.config.enabled and runtime.status != "ready"
         ]
         if not targets:
             return
+        if progress_callback is not None:
+            progress_callback(f"🔌 启动 MCP server（{len(targets)} 个）...")
+        started_at = time.monotonic()
         with concurrent.futures.ThreadPoolExecutor(
             max_workers=min(len(targets), 8),
             thread_name_prefix="paicli-mcp-startup",
         ) as pool:
-            list(pool.map(lambda runtime: self.start(runtime.config.name), targets))
+            futures = {
+                pool.submit(self.start, runtime.config.name): runtime
+                for runtime in targets
+            }
+            reported: set[str] = set()
+            while len(reported) < len(futures):
+                done, _pending = concurrent.futures.wait(
+                    futures,
+                    timeout=progress_interval_seconds,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for future in done:
+                    runtime = futures[future]
+                    if runtime.config.name in reported:
+                        continue
+                    reported.add(runtime.config.name)
+                    if progress_callback is not None:
+                        progress_callback(self._format_runtime_progress(runtime))
+                if progress_callback is not None:
+                    for future, runtime in futures.items():
+                        if future.done() or runtime.config.name in reported:
+                            continue
+                        waited = int(time.monotonic() - started_at)
+                        hint = "（首次需拉包 + 启动 Chrome）" if runtime.config.name == "chrome-devtools" and waited < 5 else f"（已等待 {waited}s）"
+                        progress_callback(
+                            f"   ⏳ {runtime.config.name:<16} {runtime.config.transport:<6} 启动中...{hint}"
+                        )
+            if progress_callback is not None:
+                ready_count = len([runtime for runtime in targets if runtime.status == "ready"])
+                tool_count = sum(len(runtime.tools) for runtime in self.ready_runtimes())
+                progress_callback(f"   {ready_count}/{len(targets)} 就绪，共 {tool_count} 个 MCP 工具")
+
+    def _format_runtime_progress(self, runtime: McpServerRuntime) -> str:
+        elapsed = runtime.uptime_seconds
+        if runtime.status == "ready":
+            return (
+                f"   ✓ {runtime.config.name:<16} {runtime.config.transport:<6} "
+                f"{len(runtime.tools)} 工具    {elapsed}s"
+            )
+        return (
+            f"   ✗ {runtime.config.name:<16} {runtime.config.transport:<6} "
+            f"{runtime.error or runtime.status}"
+        )
 
     def start(self, name: str) -> None:
         runtime = self._runtimes.get(name)

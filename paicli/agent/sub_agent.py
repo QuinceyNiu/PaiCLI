@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Protocol
 
+from paicli.agent.browser_prompt import BROWSER_MCP_GUIDE
 from paicli.agent.agent_message import AgentMessage, AgentMessageType
 from paicli.agent.agent_role import AgentRole
 from paicli.llm.glm_client import ChatResponse, Message, ToolCall
@@ -51,7 +52,7 @@ WORKER_PROMPT = """
 如果任务涉及理解代码库，请优先使用 search_code 工具；如果 search_code 不可用，再使用 read_file、list_dir 等工具。
 同一轮返回多个工具调用时，系统会并行执行这些工具；如果工具之间有依赖关系，请分多轮调用。
 请用中文简洁汇报执行结果。
-""".strip()
+""".strip() + BROWSER_MCP_GUIDE
 
 REVIEWER_PROMPT = """
 你是一个质量检查专家。你的职责是检查执行结果是否正确、完整和高质量。

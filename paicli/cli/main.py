@@ -21,6 +21,7 @@ from paicli.mcp import (
     McpConfig,
     McpServerManager,
     McpToolProvider,
+    ensure_default_mcp_config,
 )
 from paicli.plan.execution_plan import ExecutionPlan
 from paicli.rag import CodeIndex, CodeRetriever, EmbeddingClient, SearchResultFormatter, VectorStore
@@ -405,13 +406,16 @@ def main(argv: Optional[Iterable[str]] = None) -> int:
     vector_store: VectorStore | None = None
     llm_client = GLMClient(api_key)
     hitl_handler = TerminalHitlHandler(False)
+    mcp_bootstrap_message = ensure_default_mcp_config(DEFAULT_MCP_CONFIG_PATH)
+    if mcp_bootstrap_message:
+        print(mcp_bootstrap_message)
     mcp_config = McpConfig.load_merged(
         user_path=DEFAULT_MCP_CONFIG_PATH,
         project_path=PROJECT_MCP_CONFIG_PATH,
         project_dir=Path.cwd(),
     )
     mcp_manager = McpServerManager(mcp_config)
-    mcp_manager.start_all()
+    mcp_manager.start_all(progress_callback=print)
     tool_registry = HitlToolRegistry(hitl_handler)
     refresh_mcp_tools(tool_registry, mcp_manager)
 
